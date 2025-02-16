@@ -1,9 +1,12 @@
 {
     "name": "@authbound/eudi-verifier",
-    "version": "0.0.0",
     "private": true,
+    "turbo": {
+        "extends": [
+            "//"
+        ]
+    },
     "scripts": {
-        "build": "./gradlew build",
         "dev": "./gradlew bootRun",
         "test": "./gradlew test",
         "clean": "./gradlew clean",
