@@ -15,10 +15,7 @@
  */
 package eu.europa.ec.eudi.verifier.endpoint
 
-import arrow.core.NonEmptyList
-import arrow.core.recover
-import arrow.core.some
-import arrow.core.toNonEmptyListOrNull
+import arrow.core.*
 import com.nimbusds.jose.EncryptionMethod
 import com.nimbusds.jose.JWEAlgorithm
 import com.nimbusds.jose.JWSAlgorithm
@@ -28,6 +25,7 @@ import com.nimbusds.jose.util.Base64
 import com.nimbusds.jwt.SignedJWT
 import eu.europa.ec.eudi.sdjwt.NimbusSdJwtOps
 import eu.europa.ec.eudi.sdjwt.vc.DefaultHttpClientFactory
+import eu.europa.ec.eudi.sdjwt.vc.KtorHttpClientFactory
 import eu.europa.ec.eudi.sdjwt.vc.SdJwtVcVerifier
 import eu.europa.ec.eudi.sdjwt.vc.X509CertificateTrust
 import eu.europa.ec.eudi.verifier.endpoint.EmbedOptionEnum.ByReference
@@ -43,6 +41,7 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.GenerateEphemeralEnc
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.ParseJarmOptionNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.SignRequestObjectNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.VerifyJarmEncryptedJwtNimbus
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.json.jsonSupport
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DeviceResponseValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DocumentValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.IssuerSignedItemsShouldBe
@@ -53,8 +52,15 @@ import eu.europa.ec.eudi.verifier.endpoint.domain.*
 import eu.europa.ec.eudi.verifier.endpoint.port.input.*
 import eu.europa.ec.eudi.verifier.endpoint.port.out.cfg.CreateQueryWalletResponseRedirectUri
 import eu.europa.ec.eudi.verifier.endpoint.port.out.cfg.GenerateResponseCode
+import io.ktor.client.*
+import io.ktor.client.engine.apache.*
+import io.ktor.client.plugins.contentnegotiation.*
+import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
+import org.apache.http.conn.ssl.NoopHostnameVerifier
+import org.apache.http.conn.ssl.TrustSelfSignedStrategy
+import org.apache.http.ssl.SSLContextBuilder
 import org.slf4j.LoggerFactory
 import org.springframework.boot.web.codec.CodecCustomizer
 import org.springframework.context.support.beans
@@ -123,6 +129,39 @@ internal fun beans(clock: Clock) = beans {
     bean { CreateQueryWalletResponseRedirectUri.Simple }
 
     //
+    // Ktor
+    //
+    profile("self-signed") {
+        log.warn("Using Ktor HttpClients that trust self-signed certificates and perform no hostname verification")
+        bean<KtorHttpClientFactory> {
+            {
+                HttpClient(Apache) {
+                    install(ContentNegotiation) {
+                        json(jsonSupport)
+                    }
+                    expectSuccess = true
+                    engine {
+                        followRedirects = true
+                        customizeClient {
+                            setSSLContext(
+                                SSLContextBuilder.create()
+                                    .loadTrustMaterial(TrustSelfSignedStrategy.INSTANCE)
+                                    .build(),
+                            )
+                            setSSLHostnameVerifier(NoopHostnameVerifier.INSTANCE)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    profile("!self-signed") {
+        bean<KtorHttpClientFactory> {
+            DefaultHttpClientFactory
+        }
+    }
+
+    //
     // Use cases
     //
     bean {
@@ -166,6 +205,7 @@ internal fun beans(clock: Clock) = beans {
     bean { GetWalletResponseLive(clock, ref(), ref()) }
     bean { GetJarmJwksLive(ref(), clock, ref()) }
     bean { GetPresentationEventsLive(ref(), ref()) }
+    bean(::GetClientMetadataLive)
     bean<DeviceResponseValidator> {
         val x5cShouldBe = trustedIssuers?.let { X5CShouldBe.fromKeystore(it) } ?: X5CShouldBe.Ignored
         val docValidator = DocumentValidator(
@@ -200,7 +240,7 @@ internal fun beans(clock: Clock) = beans {
         }
         NimbusSdJwtOps.SdJwtVcVerifier.usingX5cOrIssuerMetadata(
             x509CertificateTrust = x509CertificateTrust,
-            httpClientFactory = DefaultHttpClientFactory,
+            httpClientFactory = ref(),
         )
     }
     bean { ValidateMsoMdocDeviceResponse(clock, ref()) }
@@ -230,7 +270,7 @@ internal fun beans(clock: Clock) = beans {
             ref(),
             ref<VerifierConfig>().verifierId.jarSigning.key,
         )
-        val verifierApi = VerifierApi(ref(), ref(), ref())
+        val verifierApi = VerifierApi(ref(), ref(), ref(), ref())
         val staticContent = StaticContent()
         val swaggerUi = SwaggerUi(
             publicResourcesBasePath = env.getRequiredProperty("spring.webflux.static-path-pattern").removeSuffix("/**"),
@@ -440,6 +480,27 @@ private fun Environment.clientMetaData(publicUrl: String): ClientMetaData {
     val defaultJarmOption = ParseJarmOptionNimbus(null, JWEAlgorithm.ECDH_ES.name, EncryptionMethod.A256GCM.name)
     checkNotNull(defaultJarmOption)
 
+    val vpFormats = VpFormats(
+        VpFormat.SdJwtVc(
+            sdJwtAlgorithms = getOptionalList(
+                name = "verifier.clientMetadata.vpFormats.sdJwtVc.sdJwtAlgorithms",
+                filter = { it.isNotBlank() },
+            )?.distinct()?.map { JWSAlgorithm.parse(it) } ?: nonEmptyListOf(JWSAlgorithm.ES256),
+
+            kbJwtAlgorithms = getOptionalList(
+                name = "verifier.clientMetadata.vpFormats.sdJwtVc.kbJwtAlgorithms",
+                filter = { it.isNotBlank() },
+            )?.distinct()?.map { JWSAlgorithm.parse(it) } ?: nonEmptyListOf(JWSAlgorithm.ES256),
+        ),
+
+        VpFormat.MsoMdoc(
+            algorithms = getOptionalList(
+                name = "verifier.clientMetadata.vpFormats.msoMdoc.algorithms",
+                filter = { it.isNotBlank() },
+            )?.distinct()?.map { JWSAlgorithm.parse(it) } ?: nonEmptyListOf(JWSAlgorithm.ES256),
+        ),
+    )
+
     return ClientMetaData(
         jwkOption = jwkOption,
         idTokenSignedResponseAlg = JWSAlgorithm.RS256.name,
@@ -453,6 +514,7 @@ private fun Environment.clientMetaData(publicUrl: String): ClientMetaData {
             authorizationEncryptedResponseAlg,
             authorizationEncryptedResponseEnc,
         ) ?: defaultJarmOption,
+        vpFormats = vpFormats,
     )
 }
 

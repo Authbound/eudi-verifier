@@ -549,6 +549,11 @@ You can also try it out in [Swagger UI](http://localhost:8080/swagger-ui#/utilit
 
 The Verifier Endpoint application can be configured using the following *environment* variables:
 
+Variable: `SPRING_PROFILES_ACTIVE`  
+Description: Comma separated list of Spring Profiles to activate  
+Available profiles:
+* `self-signed`: Configures a Ktor HttpClient that trusts self-signed certificates and performs no hostname verification
+
 Variable: `SPRING_WEBFLUX_BASEPATH`  
 Description: Context path for the Verifier Endpoint application.  
 Default value: `/`
@@ -632,6 +637,24 @@ Description: Accept only Authorization Responses that are _encrypted_ using this
 Possible values: Any `Algorithm Name` of an IANA registered asymmetric encryption method (i.e. Usage is `enc`):
 https://www.iana.org/assignments/jose/jose.xhtml#web-signature-encryption-algorithms    
 Default value: `A128CBC-HS256`
+
+Variable: `VERIFIER_CLIENTMETADATA_VPFORMATS_SDJWTVC_SDJWTALGORITHMS`  
+Description: Comma separated list of signature algorithms the Issuer Signed JWT of an SD-JWT VC can be signed with     
+Possible values: Any `Algorithm Name` of an IANA registered asymmetric signature algorithm (i.e. Usage is `alg`):
+https://www.iana.org/assignments/jose/jose.xhtml#web-signature-encryption-algorithms
+Default value: `ES256`
+
+Variable: `VERIFIER_CLIENTMETADATA_VPFORMATS_SDJWTVC_KBJWTALGORITHMS`  
+Description: Comma separated list of signature algorithms the Key Binding JWT of an SD-JWT VC can be signed with     
+Possible values: Any `Algorithm Name` of an IANA registered asymmetric signature algorithm (i.e. Usage is `alg`):
+https://www.iana.org/assignments/jose/jose.xhtml#web-signature-encryption-algorithms
+Default value: `ES256`
+
+Variable: `VERIFIER_CLIENTMETADATA_VPFORMATS_MSOMDOC_ALGORITHMS`  
+Description: Comma separated list of signature algorithms the `COSESign1` of an `IssuerSigned` in `MDoc` can be signed with        
+Possible values: Any `Algorithm Name` of an IANA registered asymmetric signature algorithm (i.e. Usage is `alg`):
+https://www.iana.org/assignments/jose/jose.xhtml#web-signature-encryption-algorithms
+Default value: `ES256`
 
 Variable: `VERIFIER_TRANSACTIONDATA_HASHALGORITHM`  
 Description: Hash algorithm to communicate in the `transaction_data_hashes_alg` claim of transaction data  
