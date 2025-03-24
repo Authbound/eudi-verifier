@@ -40,7 +40,15 @@ sealed interface EmbedOption<in ID> {
 }
 
 /**
- * Configure option for response mode
+ * Configuration option for `request_uri_method`
+ */
+enum class RequestUriMethod {
+    Get,
+    Post,
+}
+
+/**
+ * Configuration option for response mode
  */
 enum class ResponseModeOption {
     DirectPost,
@@ -128,7 +136,6 @@ data class VpFormats(
  * @see <a href="https://openid.net/specs/openid-connect-registration-1_0.html">OpenID Connect Dynamic Client Registration specification</a>
  */
 data class ClientMetaData(
-    val jwkOption: EmbedOption<RequestId>,
     val idTokenSignedResponseAlg: String,
     val idTokenEncryptedResponseAlg: String,
     val idTokenEncryptedResponseEnc: String,
@@ -201,7 +208,7 @@ sealed interface VerifierId {
             }
         }
 
-        override val clientId: ClientId = "x509_san_dns:$originalClientId"
+        override val clientId: ClientId = "${OpenId4VPSpec.CLIENT_ID_SCHEME_X509_SAN_DNS}:$originalClientId"
     }
 
     /**
@@ -219,7 +226,7 @@ sealed interface VerifierId {
             }
         }
 
-        override val clientId: ClientId = "x509_san_uri:$originalClientId"
+        override val clientId: ClientId = "${OpenId4VPSpec.CLIENT_ID_SCHEME_X509_SAN_URI}:$originalClientId"
     }
 }
 
@@ -242,6 +249,7 @@ enum class HashAlgorithm(val ianaName: String) {
 data class VerifierConfig(
     val verifierId: VerifierId,
     val requestJarOption: EmbedOption<RequestId>,
+    val requestUriMethod: RequestUriMethod,
     val presentationDefinitionEmbedOption: EmbedOption<RequestId>,
     val responseModeOption: ResponseModeOption,
     val responseUriBuilder: PresentationRelatedUrlBuilder<RequestId>,

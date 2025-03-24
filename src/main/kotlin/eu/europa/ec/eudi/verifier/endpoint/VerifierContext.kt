@@ -37,9 +37,9 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cfg.GenerateRequestIdNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cfg.GenerateTransactionIdNimbus
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.CreateJarNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.GenerateEphemeralEncryptionKeyPairNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.ParseJarmOptionNimbus
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.SignRequestObjectNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.VerifyJarmEncryptedJwtNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.json.jsonSupport
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DeviceResponseValidator
@@ -108,7 +108,7 @@ internal fun beans(clock: Clock) = beans {
     //
     // JOSE
     //
-    bean { SignRequestObjectNimbus() }
+    bean { CreateJarNimbus() }
     bean { VerifyJarmEncryptedJwtNimbus }
 
     //
@@ -180,7 +180,7 @@ internal fun beans(clock: Clock) = beans {
         )
     }
 
-    bean { GetRequestObjectLive(ref(), ref(), ref(), ref(), clock, ref()) }
+    bean { RetrieveRequestObjectLive(ref(), ref(), ref(), ref(), clock, ref(), ref()) }
 
     bean { GetPresentationDefinitionLive(clock, ref(), ref()) }
     bean {
@@ -203,7 +203,6 @@ internal fun beans(clock: Clock) = beans {
     bean { PostWalletResponseLive(ref(), ref(), ref(), clock, ref(), ref(), ref(), ref(), ref()) }
     bean { GenerateEphemeralEncryptionKeyPairNimbus }
     bean { GetWalletResponseLive(clock, ref(), ref()) }
-    bean { GetJarmJwksLive(ref(), clock, ref()) }
     bean { GetPresentationEventsLive(ref(), ref()) }
     bean(::GetClientMetadataLive)
     bean<DeviceResponseValidator> {
@@ -264,7 +263,6 @@ internal fun beans(clock: Clock) = beans {
 
     bean {
         val walletApi = WalletApi(
-            ref(),
             ref(),
             ref(),
             ref(),
@@ -429,6 +427,7 @@ private fun verifierConfig(environment: Environment, clock: Clock): VerifierConf
             ByReference, null -> WalletApi.requestJwtByReference(environment.publicUrl())
         }
     }
+    val requestUriMethod = environment.getProperty<RequestUriMethod>("verifier.requestJwt.requestUriMethod") ?: RequestUriMethod.Get
     val responseModeOption =
         environment.getProperty("verifier.response.mode", ResponseModeOption::class.java)
             ?: ResponseModeOption.DirectPostJwt
@@ -453,23 +452,17 @@ private fun verifierConfig(environment: Environment, clock: Clock): VerifierConf
     return VerifierConfig(
         verifierId = verifierId,
         requestJarOption = requestJarOption,
+        requestUriMethod = requestUriMethod,
         presentationDefinitionEmbedOption = presentationDefinitionEmbedOption,
         responseUriBuilder = WalletApi.directPost(publicUrl),
         responseModeOption = responseModeOption,
         maxAge = maxAge,
-        clientMetaData = environment.clientMetaData(publicUrl),
+        clientMetaData = environment.clientMetaData(),
         transactionDataHashAlgorithm = transactionDataHashAlgorithm,
     )
 }
 
-private fun Environment.clientMetaData(publicUrl: String): ClientMetaData {
-    val jwkOption = getProperty("verifier.jwk.embed", EmbedOptionEnum::class.java).let {
-        when (it) {
-            ByReference -> WalletApi.jarmJwksByReference(publicUrl)
-            ByValue, null -> EmbedOption.ByValue
-        }
-    }
-
+private fun Environment.clientMetaData(): ClientMetaData {
     val authorizationSignedResponseAlg =
         getProperty("verifier.clientMetadata.authorizationSignedResponseAlg")
     val authorizationEncryptedResponseAlg =
@@ -502,7 +495,6 @@ private fun Environment.clientMetaData(publicUrl: String): ClientMetaData {
     )
 
     return ClientMetaData(
-        jwkOption = jwkOption,
         idTokenSignedResponseAlg = JWSAlgorithm.RS256.name,
         idTokenEncryptedResponseAlg = JWEAlgorithm.RSA_OAEP_256.name,
         idTokenEncryptedResponseEnc = EncryptionMethod.A128CBC_HS256.name,

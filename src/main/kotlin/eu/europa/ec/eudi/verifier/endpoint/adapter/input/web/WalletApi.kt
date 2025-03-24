@@ -19,9 +19,7 @@ import com.nimbusds.jose.jwk.JWK
 import com.nimbusds.jose.jwk.JWKSet
 import eu.europa.ec.eudi.prex.PresentationDefinition
 import eu.europa.ec.eudi.prex.PresentationExchange
-import eu.europa.ec.eudi.verifier.endpoint.domain.EmbedOption
-import eu.europa.ec.eudi.verifier.endpoint.domain.PresentationRelatedUrlBuilder
-import eu.europa.ec.eudi.verifier.endpoint.domain.RequestId
+import eu.europa.ec.eudi.verifier.endpoint.domain.*
 import eu.europa.ec.eudi.verifier.endpoint.port.input.*
 import eu.europa.ec.eudi.verifier.endpoint.port.input.QueryResponse.*
 import kotlinx.serialization.SerializationException
@@ -31,20 +29,23 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import org.springframework.http.HttpMethod
+import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.util.MultiValueMap
 import org.springframework.web.reactive.function.server.*
 import org.springframework.web.reactive.function.server.ServerResponse.*
 import org.springframework.web.util.DefaultUriBuilderFactory
 
+private val REQUEST_OBJECT_MEDIA_TYPE = MediaType.parseMediaType(RFC9101.REQUEST_OBJECT_MEDIA_TYPE)
+
 /**
  * The WEB API available to the wallet
  */
 class WalletApi(
-    private val getRequestObject: GetRequestObject,
+    private val retrieveRequestObject: RetrieveRequestObject,
     private val getPresentationDefinition: GetPresentationDefinition,
     private val postWalletResponse: PostWalletResponse,
-    private val getJarmJwks: GetJarmJwks,
     private val signingKey: JWK,
 ) {
 
@@ -54,14 +55,18 @@ class WalletApi(
      * The routes available to the wallet
      */
     val route = coRouter {
-        GET(REQUEST_JWT_PATH, this@WalletApi::handleGetRequestObject)
+        GET(REQUEST_JWT_PATH, this@WalletApi::handleRetrieveRequestObject)
+        POST(
+            REQUEST_JWT_PATH,
+            contentType(MediaType.APPLICATION_FORM_URLENCODED) and accept(REQUEST_OBJECT_MEDIA_TYPE),
+            this@WalletApi::handleRetrieveRequestObject,
+        )
         GET(PRESENTATION_DEFINITION_PATH, this@WalletApi::handleGetPresentationDefinition)
         POST(
             WALLET_RESPONSE_PATH,
             this@WalletApi::handlePostWalletResponse,
         )
         GET(GET_PUBLIC_JWK_SET_PATH) { _ -> handleGetPublicJwkSet() }
-        GET(JARM_JWK_SET_PATH, this@WalletApi::handleGetJarmJwks)
     }
 
     /**
@@ -69,18 +74,37 @@ class WalletApi(
      * the Request Object of the presentation.
      * If found, the Request Object will be returned as JWT
      */
-    private suspend fun handleGetRequestObject(req: ServerRequest): ServerResponse {
-        suspend fun requestObjectFound(jwt: String) =
-            ok().contentType(MediaType.parseMediaType("application/oauth-authz-req+jwt"))
-                .bodyValueAndAwait(jwt)
+    private suspend fun handleRetrieveRequestObject(req: ServerRequest): ServerResponse {
+        suspend fun ServerRequest.invocationMethod(): RetrieveRequestObjectMethod =
+            when (method()) {
+                HttpMethod.GET -> RetrieveRequestObjectMethod.Get
+                HttpMethod.POST -> {
+                    val form = awaitFormData()
+                    RetrieveRequestObjectMethod.Post(
+                        walletMetadata = form.getFirst(OpenId4VPSpec.WALLET_METADATA),
+                        walletNonce = form.getFirst(OpenId4VPSpec.WALLET_NONCE),
+                    )
+                }
+                else -> error("Allowed HTTP Method: GET, POST")
+            }
+
+        suspend fun requestObjectFound(jwt: String) = ok().contentType(REQUEST_OBJECT_MEDIA_TYPE).bodyValueAndAwait(jwt)
 
         val requestId = req.requestId()
+        val invocationMethod = req.invocationMethod()
+
         logger.info("Handling GetRequestObject for ${requestId.value} ...")
-        return when (val result = getRequestObject(requestId)) {
-            is Found -> requestObjectFound(result.value)
-            is NotFound -> notFound().buildAndAwait()
-            is InvalidState -> badRequest().buildAndAwait()
-        }
+        val result = retrieveRequestObject(requestId, invocationMethod)
+        return result.fold(
+            ifRight = { requestObjectFound(it) },
+            ifLeft = {
+                val status = when (it) {
+                    RetrieveRequestObjectError.PresentationNotFound -> HttpStatus.NOT_FOUND
+                    else -> HttpStatus.BAD_REQUEST
+                }
+                status(status).buildAndAwait()
+            },
+        )
     }
 
     /**
@@ -138,20 +162,6 @@ class WalletApi(
             .bodyValueAndAwait(publicJwkSet)
     }
 
-    /**
-     * Handles the GET request for fetching the JWKS to be used for JARM.
-     */
-    private suspend fun handleGetJarmJwks(request: ServerRequest): ServerResponse {
-        val requestId = request.requestId().also { logger.info("Handling GetJarmJwks for ${it.value}...") }
-        return when (val queryResponse = getJarmJwks(requestId)) {
-            is NotFound -> notFound().buildAndAwait()
-            is InvalidState -> badRequest().buildAndAwait()
-            is Found -> ok()
-                .contentType(MediaType.parseMediaType(JWKSet.MIME_TYPE))
-                .bodyValueAndAwait(queryResponse.value.toJSONObject(true))
-        }
-    }
-
     companion object {
         const val GET_PUBLIC_JWK_SET_PATH = "/wallet/public-keys.json"
 
@@ -166,11 +176,6 @@ class WalletApi(
          * getting the presentation definition
          */
         const val PRESENTATION_DEFINITION_PATH = "/wallet/pd/{requestId}"
-
-        /**
-         * Path template for the route for getting the JWKS that contains the Ephemeral Key for JARM.
-         */
-        const val JARM_JWK_SET_PATH = "/wallet/jarm/{requestId}/jwks.json"
 
         /**
          * Path template for the route for
@@ -221,9 +226,6 @@ class WalletApi(
                 .build()
                 .toURL()
         }
-
-        fun jarmJwksByReference(baseUrl: String): EmbedOption.ByReference<RequestId> =
-            urlBuilder(baseUrl, JARM_JWK_SET_PATH)
 
         fun directPost(baseUrl: String): PresentationRelatedUrlBuilder<RequestId> = {
             DefaultUriBuilderFactory(baseUrl)
