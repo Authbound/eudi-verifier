@@ -6,6 +6,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     container_name: verifier-backend
+    hostname: verifier-backend
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -20,13 +21,8 @@ services:
       retries: 3
       start_period: 40s
     labels:
-      # Caddy Docker Proxy labels for routing
-      - caddy.enable=true
       - caddy=verifier.authbound.io
-      - caddy.handle_path=/api/*,/wallet/*,/verifier/*
-      - caddy.handle_path.reverse_proxy=verifier-backend:8080
-      - caddy.handle_path.reverse_proxy.health_path=/actuator/health
-      - caddy.handle_path.reverse_proxy.health_interval=30s
+      - caddy.reverse_proxy=/api/*,/wallet/*,/ui/* verifier-backend:8080
     networks:
       - coolify
       - default
@@ -34,6 +30,7 @@ services:
   verifier-ui:
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
+    hostname: verifier-ui
     restart: unless-stopped
     ports:
       - "4300:4300"
@@ -53,11 +50,8 @@ services:
       retries: 5
       start_period: 30s
     labels:
-      # Caddy Docker Proxy labels for routing
-      - caddy.enable=true
       - caddy=verifier.authbound.io
-      - caddy.handle=/*
-      - caddy.handle.reverse_proxy=verifier-ui:4300
+      - caddy.reverse_proxy=/* verifier-ui:4300
     networks:
       - coolify
       - default
