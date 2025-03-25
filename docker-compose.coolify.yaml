@@ -6,13 +6,13 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     container_name: verifier-backend
-    hostname: verifier-backend
     restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
-      VERIFIER_PUBLICURL: "${PUBLIC_URL:-https://verifier.authbound.io}"
+      VERIFIER_PUBLICURL: "https://verifier.authbound.io"
       VERIFIER_RESPONSE_MODE: "DirectPost"
+      SERVER_PORT: "8080"
       SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-prod}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
@@ -22,22 +22,20 @@ services:
       start_period: 40s
     labels:
       - caddy=verifier.authbound.io
-      - caddy.reverse_proxy=/api/*,/wallet/*,/ui/* verifier-backend:8080
+      - caddy.reverse_proxy=/wallet/* verifier-backend:8080
+      - caddy.reverse_proxy=/ui/* verifier-backend:8080
     networks:
       - coolify
-      - default
 
   verifier-ui:
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
-    hostname: verifier-ui
     restart: unless-stopped
     ports:
       - "4300:4300"
     environment:
-      DOMAIN_NAME: ${DOMAIN_NAME:-verifier.authbound.io}
-      HOST_API: ${PUBLIC_URL:-https://verifier.authbound.io}
-      BASE_PATH: "/"
+      DOMAIN_NAME: "verifier.authbound.io"
+      HOST_API: "https://verifier.authbound.io"
       PUBLIC_URL: "https://verifier.authbound.io"
       BASE_URL: "https://verifier.authbound.io"
       NODE_ENV: "production"
@@ -54,10 +52,7 @@ services:
       - caddy.reverse_proxy=/* verifier-ui:4300
     networks:
       - coolify
-      - default
 
 networks:
-  default:
-    driver: bridge
   coolify:
     external: true 
