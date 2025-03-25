@@ -23,16 +23,13 @@ services:
       # Caddy Docker Proxy labels for routing
       - caddy.enable=true
       - caddy=verifier.authbound.io
-      - caddy.routes.api.handle.path=/api/*,/wallet/*,/verifier/*
-      - caddy.routes.api.handle.order=2
-      - caddy.routes.api.handle.reverse_proxy=verifier:8080
-      - caddy.routes.api.handle.reverse_proxy.health_path=/actuator/health
-      - caddy.routes.api.handle.reverse_proxy.health_interval=30s
-      - caddy.log=true
-      - caddy.debug=true
+      - caddy.handle_path=/api/*,/wallet/*,/verifier/*
+      - caddy.handle_path.reverse_proxy=verifier-backend:8080
+      - caddy.handle_path.reverse_proxy.health_path=/actuator/health
+      - caddy.handle_path.reverse_proxy.health_interval=30s
     networks:
-      - default
       - coolify
+      - default
 
   verifier-ui:
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
@@ -59,18 +56,11 @@ services:
       # Caddy Docker Proxy labels for routing
       - caddy.enable=true
       - caddy=verifier.authbound.io
-      - caddy.routes.root.handle.path=/
-      - caddy.routes.root.handle.order=0
-      - caddy.routes.root.handle.reverse_proxy=verifier-ui:4300
-      - caddy.routes.root.handle.rewrite.strip_path_prefix=/
-      - caddy.routes.ui.handle.path=/*
-      - caddy.routes.ui.handle.order=1
-      - caddy.routes.ui.handle.reverse_proxy=verifier-ui:4300
-      - caddy.log=true
-      - caddy.debug=true
+      - caddy.handle=/*
+      - caddy.handle.reverse_proxy=verifier-ui:4300
     networks:
-      - default
       - coolify
+      - default
 
 networks:
   default:
