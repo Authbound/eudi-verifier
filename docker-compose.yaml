@@ -6,50 +6,39 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     container_name: verifier-backend
-    restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
-      VERIFIER_PUBLICURL: "${PUBLIC_URL:-http://localhost}"
+      VERIFIER_PUBLICURL: "https://verifier.authbound.io"
       VERIFIER_RESPONSE_MODE: "DirectPost"
-      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-dev}"
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8080/actuator/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+    labels:
+      # Caddy Docker Proxy labels for routing
+      - caddy.enable=true
+      - caddy=verifier.authbound.io
+      - caddy.handle=/api/*,/wallet/*,/verifier/*
+      - caddy.handle.reverse_proxy=verifier:8080
+      - caddy.handle.reverse_proxy.health_path=/actuator/health
+      - caddy.handle.reverse_proxy.health_interval=30s
 
   verifier-ui:
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
-    restart: unless-stopped
     ports:
       - "4300:4300"
     environment:
-      - DOMAIN_NAME="${DOMAIN_NAME:-localhost}"
-      - HOST_API="${PUBLIC_URL:-http://localhost}"
+      - DOMAIN_NAME="verifier.authbound.io"
+      - HOST_API="https://verifier.authbound.io"
     depends_on:
       - verifier
+    labels:
+      # Caddy Docker Proxy labels for routing
+      - caddy.enable=true
+      - caddy=verifier.authbound.io
+      - caddy.handle=/*
+      - caddy.handle.reverse_proxy=verifier-ui:4300
 
-  haproxy:
-    image: haproxy:2.8-alpine
-    container_name: haproxy
-    restart: unless-stopped
-    ports:
-      - "8443:443"
-    volumes:
-      - ./docker/haproxy.conf:/usr/local/etc/haproxy/haproxy.cfg:ro
-      - ./docker/haproxy.pem:/etc/ssl/certs/mysite.pem:ro
-    depends_on:
-      - verifier
-      - verifier-ui
-    healthcheck:
-      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-# Define a custom network to ensure all services can communicate by name
 networks:
   default:
-    driver: bridge 
+    driver: bridge
+  coolify:
+    external: true
