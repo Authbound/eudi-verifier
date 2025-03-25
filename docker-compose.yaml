@@ -47,4 +47,9 @@ services:
       test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
       interval: 30s
       timeout: 10s
-      retries: 3 
+      retries: 3
+
+# Define a custom network to ensure all services can communicate by name
+networks:
+  default:
+    driver: bridge 
