@@ -23,11 +23,11 @@ services:
       # Caddy Docker Proxy labels for routing
       - caddy.enable=true
       - caddy=verifier.authbound.io
-      - caddy.handle_order=1
-      - caddy.handle=/api/*,/wallet/*,/verifier/*
-      - caddy.handle.reverse_proxy=verifier:8080
-      - caddy.handle.reverse_proxy.health_path=/actuator/health
-      - caddy.handle.reverse_proxy.health_interval=30s
+      - caddy.routes.api.handle.path=/api/*,/wallet/*,/verifier/*
+      - caddy.routes.api.handle.order=2
+      - caddy.routes.api.handle.reverse_proxy=verifier:8080
+      - caddy.routes.api.handle.reverse_proxy.health_path=/actuator/health
+      - caddy.routes.api.handle.reverse_proxy.health_interval=30s
     networks:
       - default
 
@@ -38,8 +38,12 @@ services:
     ports:
       - "4300:4300"
     environment:
-      - DOMAIN_NAME="${DOMAIN_NAME:-verifier.authbound.io}"
-      - HOST_API="${PUBLIC_URL:-https://verifier.authbound.io}"
+      DOMAIN_NAME: ${DOMAIN_NAME:-verifier.authbound.io}
+      HOST_API: ${PUBLIC_URL:-https://verifier.authbound.io}
+      BASE_PATH: "/"
+      PUBLIC_URL: "https://verifier.authbound.io"
+      BASE_URL: "https://verifier.authbound.io"
+      NODE_ENV: "production"
     depends_on:
       - verifier
     healthcheck:
@@ -52,9 +56,12 @@ services:
       # Caddy Docker Proxy labels for routing
       - caddy.enable=true
       - caddy=verifier.authbound.io
-      - caddy.handle_order=0
-      - caddy.handle=/*
-      - caddy.handle.reverse_proxy=verifier-ui:4300
+      - caddy.routes.root.handle.path=/
+      - caddy.routes.root.handle.order=0
+      - caddy.routes.root.handle.reverse_proxy=verifier-ui:4300
+      - caddy.routes.ui.handle.path=/*
+      - caddy.routes.ui.handle.order=1
+      - caddy.routes.ui.handle.reverse_proxy=verifier-ui:4300
     networks:
       - default
 
