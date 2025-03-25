@@ -4,7 +4,7 @@ services:
   verifier:
     build:
       context: .
-      dockerfile: docker/Dockerfile
+      dockerfile: Dockerfile
     container_name: verifier-backend
     expose:
       - "8080"
