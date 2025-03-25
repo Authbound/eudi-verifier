@@ -1,9 +1,8 @@
 # Build stage
 FROM eclipse-temurin:21-jdk-alpine as builder
 WORKDIR /app
+# Copy from parent directory
 COPY . .
-# Set Java 17 compatibility for build
-ENV JAVA_TOOL_OPTIONS="--release 17"
 RUN ./gradlew clean bootJar
 
 # Runtime stage
@@ -18,6 +17,9 @@ ENV JAVA_TOOL_OPTIONS="\
     -XX:+UseG1GC \
     -XX:+UseStringDeduplication \
     --enable-preview"
+
+# Add curl for healthchecks
+RUN apk add --no-cache curl
 
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"] 
