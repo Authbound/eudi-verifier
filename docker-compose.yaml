@@ -2,69 +2,28 @@ version: '3.3'
 
 services:
   verifier:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
+    image: ghcr.io/eu-digital-identity-wallet/eudi-srv-web-verifier-endpoint-23220-4-kt:latest
     container_name: verifier-backend
-    restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
-      VERIFIER_PUBLICURL: "${PUBLIC_URL:-https://verifier.authbound.io}"
+      VERIFIER_PUBLICURL: "https://verifier.authbound.io"
       VERIFIER_RESPONSE_MODE: "DirectPost"
-      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-dev}"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    labels:
-      # Caddy Docker Proxy labels for routing
-      - caddy.enable=true
-      - caddy=verifier.authbound.io
-      - caddy.routes.api.handle.path=/api/*,/wallet/*,/verifier/*
-      - caddy.routes.api.handle.order=2
-      - caddy.routes.api.handle.reverse_proxy=verifier:8080
-      - caddy.routes.api.handle.reverse_proxy.health_path=/actuator/health
-      - caddy.routes.api.handle.reverse_proxy.health_interval=30s
-    networks:
-      - default
 
   verifier-ui:
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
-    restart: unless-stopped
     ports:
       - "4300:4300"
     environment:
-      DOMAIN_NAME: ${DOMAIN_NAME:-verifier.authbound.io}
-      HOST_API: ${PUBLIC_URL:-https://verifier.authbound.io}
-      BASE_PATH: "/"
-      PUBLIC_URL: "https://verifier.authbound.io"
-      BASE_URL: "https://verifier.authbound.io"
-      NODE_ENV: "production"
-    depends_on:
-      - verifier
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:4300 || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    labels:
-      # Caddy Docker Proxy labels for routing
-      - caddy.enable=true
-      - caddy=verifier.authbound.io
-      - caddy.routes.root.handle.path=/
-      - caddy.routes.root.handle.order=0
-      - caddy.routes.root.handle.reverse_proxy=verifier-ui:4300
-      - caddy.routes.ui.handle.path=/*
-      - caddy.routes.ui.handle.order=1
-      - caddy.routes.ui.handle.reverse_proxy=verifier-ui:4300
-    networks:
-      - default
+      - DOMAIN_NAME=""
+      - HOST_API="https://verifier.authbound.io"
 
-networks:
-  default:
-    driver: bridge
+  haproxy:
+    image: haproxy:2.7.2
+    container_name: haproxy
+    ports:
+      - "8443:443"
+    volumes:
+      - ./haproxy.conf:/usr/local/etc/haproxy/haproxy.cfg
+      - ./haproxy.pem:/etc/ssl/certs/mysite.pem
