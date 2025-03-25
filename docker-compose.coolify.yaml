@@ -12,7 +12,7 @@ services:
     environment:
       VERIFIER_PUBLICURL: "${PUBLIC_URL:-https://verifier.authbound.io}"
       VERIFIER_RESPONSE_MODE: "DirectPost"
-      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-dev}"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-prod}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
       interval: 30s
@@ -30,6 +30,7 @@ services:
       - caddy.handle.reverse_proxy.health_interval=30s
     networks:
       - default
+      - coolify
 
   verifier-ui:
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
@@ -57,7 +58,10 @@ services:
       - caddy.handle.reverse_proxy=verifier-ui:4300
     networks:
       - default
+      - coolify
 
 networks:
   default:
     driver: bridge
+  coolify:
+    external: true 
