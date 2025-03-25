@@ -13,7 +13,7 @@ services:
       VERIFIER_RESPONSE_MODE: "DirectPost"
     labels:
       - "caddy=verifier.authbound.io"
-      # - "caddy.reverse_proxy=/api/* {{upstreams 8080}}"
+      - "caddy.reverse_proxy=/api/* {{upstreams 8080}}"
       - "caddy.reverse_proxy=/ui/* {{upstreams 8080}}"
       - "caddy.reverse_proxy=/wallet/* {{upstreams 8080}}"
     networks:
