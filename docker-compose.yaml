@@ -10,8 +10,8 @@ services:
       VERIFIER_PUBLICURL: "https://verifier.authbound.io"
       VERIFIER_RESPONSE_MODE: "DirectPost"
     labels:
-      caddy: verifier.authbound.io
-      caddy.reverse_proxy: "/api/* {{upstreams 8080}}"
+      - "caddy=verifier.authbound.io"
+      - "caddy.reverse_proxy=/api/* {{upstreams 8080}}"
     networks:
       - coolify
 
@@ -24,8 +24,8 @@ services:
       - DOMAIN_NAME=""
       - HOST_API="https://verifier.authbound.io"
     labels:
-      caddy: verifier.authbound.io
-      caddy.reverse_proxy: "/* {{upstreams 4300}}"
+      - "caddy=verifier.authbound.io"
+      - "caddy.reverse_proxy=/* {{upstreams 4300}}"
     networks:
       - coolify
 
