@@ -15,6 +15,7 @@ services:
       # Caddy Docker Proxy labels for routing
       - caddy.enable=true
       - caddy=verifier.authbound.io
+      - caddy.handle_order=1
       - caddy.handle=/api/*,/wallet/*,/verifier/*
       - caddy.handle.reverse_proxy=verifier:8080
       - caddy.handle.reverse_proxy.health_path=/actuator/health
@@ -34,6 +35,7 @@ services:
       # Caddy Docker Proxy labels for routing
       - caddy.enable=true
       - caddy=verifier.authbound.io
+      - caddy.handle_order=0
       - caddy.handle=/*
       - caddy.handle.reverse_proxy=verifier-ui:4300
 
