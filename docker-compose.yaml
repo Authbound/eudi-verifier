@@ -2,7 +2,9 @@ version: '3.3'
 
 services:
   verifier:
-    image: ghcr.io/eu-digital-identity-wallet/eudi-srv-web-verifier-endpoint-23220-4-kt:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
     container_name: verifier-backend
     expose:
       - "8080"
