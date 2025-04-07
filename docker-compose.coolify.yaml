@@ -47,6 +47,7 @@ services:
       start_period: 30s
     labels:
       - caddy=verifier.authbound.io
+      - caddy.tls=internal
       - caddy.handle_path=/api/* {reverse_proxy {{upstreams 8080}}}
       - caddy.handle_path=/wallet/* {reverse_proxy {{upstreams 8080}}}
       - caddy.handle_path=/ui/* {reverse_proxy {{upstreams 8080}}}
