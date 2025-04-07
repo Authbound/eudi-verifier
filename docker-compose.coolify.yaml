@@ -22,9 +22,6 @@ services:
       start_period: 40s
     labels:
       - caddy=verifier.authbound.io
-      - caddy.reverse_proxy=/api/* {{upstreams 8080}}
-      - caddy.reverse_proxy=/wallet/* {{upstreams 8080}}
-      - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
     networks:
       - coolify
 
@@ -50,10 +47,10 @@ services:
       start_period: 30s
     labels:
       - caddy=verifier.authbound.io
-      - caddy.reverse_proxy=/ {{upstreams 4300}}
-      - caddy.reverse_proxy=/api/* {{upstreams 8080}}
-      - caddy.reverse_proxy=/wallet/* {{upstreams 8080}}
-      - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
+      - caddy.handle_path=/api/* {reverse_proxy {{upstreams 8080}}}
+      - caddy.handle_path=/wallet/* {reverse_proxy {{upstreams 8080}}}
+      - caddy.handle_path=/ui/* {reverse_proxy {{upstreams 8080}}}
+      - caddy.reverse_proxy={{upstreams 4300}}
     networks:
       - coolify
 
