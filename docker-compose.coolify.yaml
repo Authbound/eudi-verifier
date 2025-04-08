@@ -7,9 +7,8 @@ services:
       dockerfile: Dockerfile
     container_name: verifier-backend
     restart: unless-stopped
-    # No host port mapping needed if only accessed via Caddy
-    # ports:
-    #   - "8080:8080"
+    ports:
+      - "8080:8080"
     environment:
       VERIFIER_PUBLICURL: "https://verifier.authbound.io"
       VERIFIER_RESPONSE_MODE: "DirectPost"
@@ -22,9 +21,10 @@ services:
       retries: 3
       start_period: 40s
     labels:
-      # Only tell Caddy this service belongs to the domain group
       - caddy=verifier.authbound.io
-      # REMOVED reverse_proxy labels from here
+      - caddy.reverse_proxy=/api/* {{upstreams 8080}}
+      - caddy.reverse_proxy=/wallet/* {{upstreams 8080}}
+      - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
     networks:
       - coolify
 
@@ -32,14 +32,13 @@ services:
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
     restart: unless-stopped
-    # No host port mapping needed if only accessed via Caddy
-    # ports:
-    #   - "4300:4300"
+    ports:
+      - "4300:4300"
     environment:
       DOMAIN_NAME: "verifier.authbound.io"
-      HOST_API: "https://verifier.authbound.io" # This should point to the public URL Caddy serves
+      HOST_API: "https://verifier.authbound.io"
       PUBLIC_URL: "https://verifier.authbound.io"
-      BASE_URL: "https://verifier.authbound.io" # Often '/' or empty if served at root, but depends on the app
+      BASE_URL: "https://verifier.authbound.io"
       NODE_ENV: "production"
     depends_on:
       - verifier
@@ -50,28 +49,13 @@ services:
       retries: 5
       start_period: 30s
     labels:
-      # Define the domain
       - caddy=verifier.authbound.io
-
-      # Route specific API/backend paths to the verifier service (port 8080)
-      # Using caddy.route_* for explicit ordering
-      - caddy.route=/api/*
-      - caddy.route_0.reverse_proxy={{upstreams 8080}}
-
-      - caddy.route_1=/wallet/*
-      - caddy.route_1.reverse_proxy={{upstreams 8080}}
-
-      - caddy.route_2=/ui/*
-      - caddy.route_2.reverse_proxy={{upstreams 8080}}
-
-      # Route everything else (including /) to this UI service (port 4300)
-      # This route comes last because the path matcher '/' is the least specific
-      - caddy.route_3=/
-      - caddy.route_3.reverse_proxy={{upstreams 4300}}
+      - caddy.reverse_proxy=/ {{upstreams 4300}}
+      - caddy.reverse_proxy=/assets/* {{upstreams 4300}}
+      - caddy.reverse_proxy=/static/* {{upstreams 4300}}
     networks:
       - coolify
 
 networks:
   coolify:
     external: true
-
