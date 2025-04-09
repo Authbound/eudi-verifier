@@ -1,5 +1,4 @@
 version: '3.3'
-
 services:
   verifier: # Backend Service
     build:
@@ -7,12 +6,15 @@ services:
       dockerfile: Dockerfile
     container_name: verifier-backend
     restart: unless-stopped
-    ports:
-      - "8080:8080"
+    # Exposing ports to the host is often not necessary when using a reverse proxy like Caddy
+    # within the same Docker network. Caddy can reach the container port directly.
+    # You might keep it for direct access during testing if needed.
+    # ports:
+    #  - "8080:8080"
     environment:
       VERIFIER_PUBLICURL: "https://verifier.authbound.io"
       VERIFIER_RESPONSE_MODE: "DirectPost"
-      SERVER_PORT: "8080"
+      SERVER_PORT: "8080" # Internal port the application listens on
       SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-prod}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
@@ -21,11 +23,14 @@ services:
       retries: 3
       start_period: 40s
     labels:
-      # These labels define specific backend paths
-      - caddy=verifier.authbound.io
+      # --- Caddy Labels for verifier (Backend) ---
+      - caddy=verifier.authbound.io # Associate with this domain
+      # Define the specific paths this backend handles. Order matters for Caddy.
+      # Caddy usually sorts by matcher length (most specific first).
       - caddy.reverse_proxy=/api/* {{upstreams 8080}}
       - caddy.reverse_proxy=/wallet/* {{upstreams 8080}}
-      - caddy.reverse_proxy=/ui/* {{upstreams 8080}} # Assuming /ui/* goes to backend per HAProxy
+      - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
+      # --- End Caddy Labels ---
     networks:
       - coolify
 
@@ -33,13 +38,15 @@ services:
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
     restart: unless-stopped
-    ports:
-      - "4300:4300"
+    # Exposing ports to the host is often not necessary when using a reverse proxy like Caddy
+    # within the same Docker network.
+    # ports:
+    #  - "4300:4300"
     environment:
       DOMAIN_NAME: "verifier.authbound.io"
-      HOST_API: "https://verifier.authbound.io"
+      HOST_API: "https://verifier.authbound.io" # Should point to the public URL where the API is accessible
       PUBLIC_URL: "https://verifier.authbound.io"
-      BASE_URL: "https://verifier.authbound.io"
+      BASE_URL: "https://verifier.authbound.io" # Ensure this is correct for your UI framework routing
       NODE_ENV: "production"
     depends_on:
       - verifier
@@ -51,9 +58,12 @@ services:
       start_period: 30s
     labels:
       # --- Caddy Labels for verifier-ui (UI) ---
-      - caddy=verifier.authbound.io
-      # *** CHANGE HERE: Use standard / for catch-all ***
+      - caddy=verifier.authbound.io # Associate with this domain
+      # Define the catch-all route. This should have the lowest priority.
+      # Caddy handles this automatically because '/' is less specific than '/api/*', etc.
       - caddy.reverse_proxy=/ {{upstreams 4300}}
+      # --- End Caddy Labels ---
+      # DO NOT add the /api/*, /wallet/*, /ui/* routes here again!
     networks:
       - coolify
 
