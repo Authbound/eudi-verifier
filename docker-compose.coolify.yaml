@@ -50,15 +50,13 @@ services:
       start_period: 30s
     labels:
       - caddy=verifier.authbound.io
-      - caddy.handle_path=/* {
-          @notStatic {
-            not path /assets/* /static/*
-          }
-          rewrite @notStatic /index.html
-          reverse_proxy {{upstreams 4300}}
+      - caddy.tls=internal
+      - caddy.reverse_proxy=/api/* {{upstreams 8080}}
+      - caddy.reverse_proxy=/wallet/* {{upstreams 8080}}
+      - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
+      - caddy.reverse_proxy=/* {{upstreams 4300}} {
+          rewrite * /index.html
         }
-      - caddy.reverse_proxy=/assets/* {{upstreams 4300}}
-      - caddy.reverse_proxy=/static/* {{upstreams 4300}}
     networks:
       - coolify
 
