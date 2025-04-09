@@ -1,4 +1,5 @@
 version: '3.3'
+
 services:
   verifier: # Backend Service
     build:
@@ -6,10 +7,12 @@ services:
       dockerfile: Dockerfile
     container_name: verifier-backend
     restart: unless-stopped
+    ports:
+      - "8080:8080"
     environment:
       VERIFIER_PUBLICURL: "https://verifier.authbound.io"
       VERIFIER_RESPONSE_MODE: "DirectPost"
-      SERVER_PORT: "8080" # Internal port the application listens on
+      SERVER_PORT: "8080"
       SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-prod}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
@@ -18,25 +21,25 @@ services:
       retries: 3
       start_period: 40s
     labels:
-      # --- Caddy Labels for verifier (Backend) ---
+      # These labels define specific backend paths
       - caddy=verifier.authbound.io
-      # Backend handles /api/* (assuming UI needs it) and /wallet/* (as per HAProxy)
       - caddy.reverse_proxy=/api/* {{upstreams 8080}}
       - caddy.reverse_proxy=/wallet/* {{upstreams 8080}}
-      # REMOVED: - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
-      # --- End Caddy Labels ---
+      - caddy.reverse_proxy=/ui/* {{upstreams 8080}} # Assuming /ui/* goes to backend per HAProxy
     networks:
       - coolify
 
-  verifier-ui: # UI Service (Angular App)
+  verifier-ui: # UI Service
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
     restart: unless-stopped
+    ports:
+      - "4300:4300"
     environment:
       DOMAIN_NAME: "verifier.authbound.io"
-      HOST_API: "https://verifier.authbound.io" # Points to where API is available via proxy
+      HOST_API: "https://verifier.authbound.io"
       PUBLIC_URL: "https://verifier.authbound.io"
-      BASE_URL: "https://verifier.authbound.io" # For Angular Router
+      BASE_URL: "https://verifier.authbound.io"
       NODE_ENV: "production"
     depends_on:
       - verifier
@@ -49,10 +52,8 @@ services:
     labels:
       # --- Caddy Labels for verifier-ui (UI) ---
       - caddy=verifier.authbound.io
-      # Frontend handles the root path '/' and everything not matched above.
-      # This will now include /ui/* requests, serving the Angular index.html
+      # *** CHANGE HERE: Use standard / for catch-all ***
       - caddy.reverse_proxy=/ {{upstreams 4300}}
-      # --- End Caddy Labels ---
     networks:
       - coolify
 
