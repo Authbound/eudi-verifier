@@ -24,9 +24,8 @@ services:
       start_period: 40s
     labels:
       # --- Caddy Labels for verifier (Backend) ---
+      # These labels correctly define the specific paths handled by the backend.
       - caddy=verifier.authbound.io # Associate with this domain
-      # Define the specific paths this backend handles. Order matters for Caddy.
-      # Caddy usually sorts by matcher length (most specific first).
       - caddy.reverse_proxy=/api/* {{upstreams 8080}}
       - caddy.reverse_proxy=/wallet/* {{upstreams 8080}}
       - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
@@ -58,12 +57,10 @@ services:
       start_period: 30s
     labels:
       # --- Caddy Labels for verifier-ui (UI) ---
+      # This label correctly defines the catch-all route handled by the frontend.
       - caddy=verifier.authbound.io # Associate with this domain
-      # Define the catch-all route. This should have the lowest priority.
-      # Caddy handles this automatically because '/' is less specific than '/api/*', etc.
       - caddy.reverse_proxy=/ {{upstreams 4300}}
       # --- End Caddy Labels ---
-      # DO NOT add the /api/*, /wallet/*, /ui/* routes here again!
     networks:
       - coolify
 
