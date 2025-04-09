@@ -20,6 +20,12 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    labels:
+      - caddy=verifier.authbound.io
+      - caddy.route.handle_1.path=/ui/*
+      - caddy.route.handle_1.reverse_proxy={{upstreams 8080}}
+      - caddy.route.handle_2.path=/wallet/*
+      - caddy.route.handle_2.reverse_proxy={{upstreams 8080}}
     networks:
       - coolify
 
@@ -45,15 +51,8 @@ services:
       start_period: 30s
     labels:
       - caddy=verifier.authbound.io
-      # Define ordered routes for verifier.authbound.io
-      # Route /ui/* to the backend service
-      - caddy.route.handle_1.path=/ui/*
-      - caddy.route.handle_1.reverse_proxy=verifier-backend:8080
-      # Route /wallet/* to the backend service
-      - caddy.route.handle_2.path=/wallet/*
-      - caddy.route.handle_2.reverse_proxy=verifier-backend:8080
       # Default route: Handle all other requests (including /) - proxy to this UI service
-      - caddy.route.handle_3.reverse_proxy=/* {{upstreams 4300}}
+      - caddy.route.reverse_proxy=/* {{upstreams 4300}}
     networks:
       - coolify
 
