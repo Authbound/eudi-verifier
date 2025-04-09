@@ -6,11 +6,6 @@ services:
       dockerfile: Dockerfile
     container_name: verifier-backend
     restart: unless-stopped
-    # Exposing ports to the host is often not necessary when using a reverse proxy like Caddy
-    # within the same Docker network. Caddy can reach the container port directly.
-    # You might keep it for direct access during testing if needed.
-    # ports:
-    #  - "8080:8080"
     environment:
       VERIFIER_PUBLICURL: "https://verifier.authbound.io"
       VERIFIER_RESPONSE_MODE: "DirectPost"
@@ -24,28 +19,24 @@ services:
       start_period: 40s
     labels:
       # --- Caddy Labels for verifier (Backend) ---
-      # These labels correctly define the specific paths handled by the backend.
-      - caddy=verifier.authbound.io # Associate with this domain
+      - caddy=verifier.authbound.io
+      # Backend handles /api/* (assuming UI needs it) and /wallet/* (as per HAProxy)
       - caddy.reverse_proxy=/api/* {{upstreams 8080}}
       - caddy.reverse_proxy=/wallet/* {{upstreams 8080}}
-      - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
+      # REMOVED: - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
       # --- End Caddy Labels ---
     networks:
       - coolify
 
-  verifier-ui: # UI Service
+  verifier-ui: # UI Service (Angular App)
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
     restart: unless-stopped
-    # Exposing ports to the host is often not necessary when using a reverse proxy like Caddy
-    # within the same Docker network.
-    # ports:
-    #  - "4300:4300"
     environment:
       DOMAIN_NAME: "verifier.authbound.io"
-      HOST_API: "https://verifier.authbound.io" # Should point to the public URL where the API is accessible
+      HOST_API: "https://verifier.authbound.io" # Points to where API is available via proxy
       PUBLIC_URL: "https://verifier.authbound.io"
-      BASE_URL: "https://verifier.authbound.io" # Ensure this is correct for your UI framework routing
+      BASE_URL: "https://verifier.authbound.io" # For Angular Router
       NODE_ENV: "production"
     depends_on:
       - verifier
@@ -57,8 +48,9 @@ services:
       start_period: 30s
     labels:
       # --- Caddy Labels for verifier-ui (UI) ---
-      # This label correctly defines the catch-all route handled by the frontend.
-      - caddy=verifier.authbound.io # Associate with this domain
+      - caddy=verifier.authbound.io
+      # Frontend handles the root path '/' and everything not matched above.
+      # This will now include /ui/* requests, serving the Angular index.html
       - caddy.reverse_proxy=/ {{upstreams 4300}}
       # --- End Caddy Labels ---
     networks:
