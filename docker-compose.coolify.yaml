@@ -41,38 +41,38 @@ services:
       retries: 5
       start_period: 30s
     labels:
-      - caddy=verifier.authbound.io
-      - caddy.reverse_proxy=/* verifier-ui:4300
+      - coolify.managed=true
     networks:
       - coolify
 
-# Comment out HAProxy service entirely for diagnostics
-#  haproxy:
-#    image: haproxy:2.7.2
-#    container_name: haproxy
-#    restart: unless-stopped
-#    ports:
-#      - "8443:443" # Use internal port 8443 instead of 443
-#    volumes:
-#      - ./docker/haproxy.conf:/usr/local/etc/haproxy/haproxy.cfg
-#    # Add healthcheck
-#    healthcheck:
-#      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
-#      interval: 10s
-#      timeout: 5s
-#      retries: 3
-#      start_period: 10s
-#    # HAProxy doesn't need SSL cert as Caddy handles SSL termination
-#    # We'll use Caddy for SSL and route all traffic to HAProxy
-#    labels:
-#      - caddy=verifier.authbound.io
-#      - caddy.reverse_proxy=/* haproxy:443
-#      - coolify.managed=true
-#    depends_on:
-#      - verifier
-#      - verifier-ui
-#    networks:
-#      - coolify
+# Restore HAProxy service
+  haproxy:
+    image: haproxy:2.7.2
+    container_name: haproxy
+    restart: unless-stopped
+    ports:
+      - "8443:443" # Use internal port 8443 instead of 443
+    volumes:
+      - ./docker/haproxy.conf:/usr/local/etc/haproxy/haproxy.cfg
+    # Add healthcheck
+    healthcheck:
+      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # HAProxy doesn't need SSL cert as Caddy handles SSL termination
+    # We'll use Caddy for SSL and route all traffic to HAProxy
+    labels:
+      - caddy=verifier.authbound.io
+      # Explicitly use http scheme for the upstream proxy target
+      - caddy.reverse_proxy=/* http://haproxy:443
+      - coolify.managed=true
+    depends_on:
+      - verifier
+      - verifier-ui
+    networks:
+      - coolify
 
 networks:
   coolify:
