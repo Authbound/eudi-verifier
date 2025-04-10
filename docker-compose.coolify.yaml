@@ -54,6 +54,8 @@ services:
       - "8444:443"
     volumes:
       - ./docker/haproxy.conf:/usr/local/etc/haproxy/haproxy.cfg
+    # Add command to start HAProxy server with the config file
+    command: haproxy -f /usr/local/etc/haproxy/haproxy.cfg
     # Add healthcheck
     healthcheck:
       test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
