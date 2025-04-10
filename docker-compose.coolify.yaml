@@ -51,11 +51,15 @@ services:
       start_period: 30s
     labels:
       - caddy=verifier.authbound.io
-      # Default route: Handle all other requests (including /) - proxy to this UI service
-      - caddy.route.reverse_proxy=/* {{upstreams 4300}}
+      - caddy.reverse_proxy=/api/* {{upstreams 8080}}
+      - caddy.reverse_proxy=/wallet/* {{upstreams 8080}}
+      - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
+      - caddy.reverse_proxy=/* {{upstreams 4300}} {
+          rewrite * /index.html
+        }
     networks:
       - coolify
 
 networks:
   coolify:
-    external: true 
+    external: true
