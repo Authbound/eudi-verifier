@@ -65,8 +65,8 @@ services:
     # We'll use Caddy for SSL and route all traffic to HAProxy
     labels:
       - caddy=verifier.authbound.io
-      # Explicitly use http scheme for the upstream proxy target
-      - caddy.reverse_proxy=/* http://haproxy:443
+      # Remove explicit http scheme, revert to implicit default
+      - caddy.reverse_proxy=/* haproxy:443
       - coolify.managed=true
     depends_on:
       - verifier
