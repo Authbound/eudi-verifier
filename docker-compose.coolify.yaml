@@ -22,10 +22,15 @@ services:
       start_period: 40s
     labels:
       - caddy=verifier.authbound.io
-      - caddy.route.handle_1.path=/ui/*
-      - caddy.route.handle_1.reverse_proxy={{upstreams 8080}}
-      - caddy.route.handle_2.path=/wallet/*
-      - caddy.route.handle_2.reverse_proxy={{upstreams 8080}}
+      - caddy.@wallet.path=/wallet/*
+      - caddy.handle_path=@wallet
+      - caddy.handle_path.reverse_proxy=verifier-backend:8080
+      - caddy.@ui.path=/ui/*
+      - caddy.handle_path.1=@ui
+      - caddy.handle_path.1.reverse_proxy=verifier-backend:8080
+      - caddy.@api.path=/api/*
+      - caddy.handle_path.2=@api
+      - caddy.handle_path.2.reverse_proxy=verifier-backend:8080
     networks:
       - coolify
 
@@ -51,12 +56,12 @@ services:
       start_period: 30s
     labels:
       - caddy=verifier.authbound.io
-      - caddy.reverse_proxy=/api/* {{upstreams 8080}}
-      - caddy.reverse_proxy=/wallet/* {{upstreams 8080}}
-      - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
-      - caddy.reverse_proxy=/* {{upstreams 4300}} {
-          rewrite * /index.html
-        }
+      - caddy.@root.path=/*
+      - caddy.handle_path.3=@root
+      - caddy.handle_path.3.reverse_proxy=verifier-ui:4300
+      - caddy.handle.root
+      - caddy.handle.root.response.status=404
+      - caddy.handle.root.rewrite=* /index.html
     networks:
       - coolify
 
