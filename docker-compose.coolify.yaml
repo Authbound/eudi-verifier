@@ -21,16 +21,7 @@ services:
       retries: 3
       start_period: 40s
     labels:
-      - caddy=verifier.authbound.io
-      - caddy.@wallet.path=/wallet/*
-      - caddy.handle_path=@wallet
-      - caddy.handle_path.reverse_proxy=verifier-backend:8080
-      - caddy.@ui.path=/ui/*
-      - caddy.handle_path.1=@ui
-      - caddy.handle_path.1.reverse_proxy=verifier-backend:8080
-      - caddy.@api.path=/api/*
-      - caddy.handle_path.2=@api
-      - caddy.handle_path.2.reverse_proxy=verifier-backend:8080
+      - coolify.managed=true
     networks:
       - coolify
 
@@ -56,6 +47,15 @@ services:
       start_period: 30s
     labels:
       - caddy=verifier.authbound.io
+      - caddy.@wallet.path=/wallet/*
+      - caddy.handle_path=@wallet
+      - caddy.handle_path.reverse_proxy=verifier-backend:8080
+      - caddy.@ui.path=/ui/*
+      - caddy.handle_path.1=@ui
+      - caddy.handle_path.1.reverse_proxy=verifier-backend:8080
+      - caddy.@api.path=/api/*
+      - caddy.handle_path.2=@api
+      - caddy.handle_path.2.reverse_proxy=verifier-backend:8080
       - caddy.@root.path=/*
       - caddy.handle_path.3=@root
       - caddy.handle_path.3.reverse_proxy=verifier-ui:4300
