@@ -29,10 +29,8 @@ services:
     ports:
       - "4300:4300"
     environment:
-      DOMAIN_NAME: "verifier.authbound.io"
+      DOMAIN_NAME: ""
       HOST_API: "https://verifier.authbound.io"
-      PUBLIC_URL: "https://verifier.authbound.io"
-      BASE_URL: "https://verifier.authbound.io"
       NODE_ENV: "production"
     depends_on:
       - verifier
@@ -43,22 +41,23 @@ services:
       retries: 5
       start_period: 30s
     labels:
+      - coolify.managed=true
+    networks:
+      - coolify
+
+  haproxy:
+    image: haproxy:2.7.2
+    container_name: haproxy
+    restart: unless-stopped
+    ports:
+      - "8443:443" # Use internal port 8443 instead of 443
+    volumes:
+      - ./docker/haproxy.conf:/usr/local/etc/haproxy/haproxy.cfg
+    # HAProxy doesn't need SSL cert as Caddy handles SSL termination
+    # We'll use Caddy for SSL and route all traffic to HAProxy
+    labels:
       - caddy=verifier.authbound.io
-      - caddy.@wallet.path=/wallet/*
-      - caddy.handle_path=@wallet
-      - caddy.handle_path.reverse_proxy=verifier-backend:8080
-      - caddy.@ui.path=/ui/*
-      - caddy.handle_path.1=@ui
-      - caddy.handle_path.1.reverse_proxy=verifier-backend:8080
-      - caddy.@api.path=/api/*
-      - caddy.handle_path.2=@api
-      - caddy.handle_path.2.reverse_proxy=verifier-backend:8080
-      - caddy.@root.path=/*
-      - caddy.handle_path.3=@root
-      - caddy.handle_path.3.reverse_proxy=verifier-ui:4300
-      - caddy.handle.root
-      - caddy.handle.root.response.status=404
-      - caddy.handle.root.rewrite=* /index.html
+      - caddy.reverse_proxy=/* haproxy:8443
     networks:
       - coolify
 
