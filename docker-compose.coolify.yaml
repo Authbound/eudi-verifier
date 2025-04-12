@@ -35,26 +35,12 @@ services:
       retries: 5
       start_period: 30s
     labels:
-      # Traefik Routers for path-based routing
-      # Ensure Traefik is enabled in Coolify settings for this domain
-
-      # Router for Backend Paths (Higher Priority)
-      - "traefik.http.routers.verifier-backend-proxy.rule=Host(`verifier.authbound.io`) && (PathPrefix(`/api`) || PathPrefix(`/ui`) || PathPrefix(`/wallet`))"
-      - "traefik.http.routers.verifier-backend-proxy.service=verifier-backend@docker"
-      - "traefik.http.routers.verifier-backend-proxy.entrypoints=https"
-      - "traefik.http.routers.verifier-backend-proxy.priority=11"
-      - "traefik.http.routers.verifier-backend-proxy.tls.certresolver=letsencrypt" # Adjust if Coolify uses a different resolver name
-
-      # Router for UI/Frontend Path (Lower Priority Catch-all for the host)
-      - "traefik.http.routers.verifier-ui-proxy.rule=Host(`verifier.authbound.io`) && PathPrefix(`/`)"
-      - "traefik.http.routers.verifier-ui-proxy.service=verifier-ui@docker"
-      - "traefik.http.routers.verifier-ui-proxy.entrypoints=https"
-      - "traefik.http.routers.verifier-ui-proxy.priority=10"
-      - "traefik.http.routers.verifier-ui-proxy.tls.certresolver=letsencrypt" # Adjust if Coolify uses a different resolver name
-
-      # Optional: Explicitly tell Traefik which port the service listens on, if Coolify doesn't infer it.
-      # - "traefik.http.services.verifier-ui@docker.loadbalancer.server.port=4300"
-
+      # Caddy Labels for path-based routing via caddy-docker-proxy
+      - caddy=verifier.authbound.io
+      - caddy.reverse_proxy=/api/*{{upstreams verifier-backend:8080}}
+      - caddy.reverse_proxy.1=/ui/*{{upstreams verifier-backend:8080}}
+      - caddy.reverse_proxy.2=/wallet/*{{upstreams verifier-backend:8080}}
+      - caddy.reverse_proxy.3=/*{{upstreams verifier-ui:4300}}
     networks:
       - coolify
 
