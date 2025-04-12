@@ -2,9 +2,11 @@ version: '3.3'
 
 services:
   verifier:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/eu-digital-identity-wallet/eudi-srv-web-verifier-endpoint-23220-4-kt:latest
+    # container_name: verifier-backend
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     container_name: verifier-backend
     restart: unless-stopped
     ports:
