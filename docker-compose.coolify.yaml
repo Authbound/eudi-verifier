@@ -7,35 +7,34 @@ services:
     environment:
       VERIFIER_PUBLICURL: "https://verifier.authbound.io"
       VERIFIER_RESPONSE_MODE: "DirectPost"
-    restart: unless-stopped
-      
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    labels:
-      - coolify.managed=true
+    # restart: unless-stopped
+    ports:
+      - "8080:8080"  
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 40s
     networks:
       - coolify
 
   verifier-ui:
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
-    restart: unless-stopped
+    # restart: unless-stopped
     environment:
       - DOMAIN_NAME=""
       - HOST_API="https://verifier.authbound.io"
-
-    depends_on:
-      - verifier
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:4300 || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+    ports:
+      - "4300:4300"
+    
+    # healthcheck:
+    #   test: ["CMD-SHELL", "curl -f http://localhost:4300 || exit 1"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 5
+    #   start_period: 30s
     labels:
       - caddy=verifier.authbound.io
       - caddy.reverse_proxy=/api/*{{upstreams verifier-backend:8080}}
