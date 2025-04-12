@@ -2,20 +2,29 @@ version: '3.3'
 
 services:
   verifier:
-    image: ghcr.io/eu-digital-identity-wallet/eudi-srv-web-verifier-endpoint-23220-4-kt:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: verifier-backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
     environment:
       VERIFIER_PUBLICURL: "https://verifier.authbound.io"
       VERIFIER_RESPONSE_MODE: "DirectPost"
-    restart: unless-stopped
-    # ports:
-    #  - "8080:8080"
+      SERVER_PORT: "8080"
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-prod}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+    labels:
+      - caddy=verifier.authbound.io
+      - caddy.reverse_proxy=/api/* {{upstreams 8080}}
+      - caddy.reverse_proxy=/wallet/* {{upstreams 8080}}
+      - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
     networks:
       - coolify
 
@@ -23,11 +32,16 @@ services:
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
     restart: unless-stopped
+    ports:
+      - "4300:4300"
     environment:
-      - DOMAIN_NAME=""
-      - HOST_API="https://verifier.authbound.io"
-    # ports:
-    #  - "4300:4300"
+      DOMAIN_NAME: "verifier.authbound.io"
+      HOST_API: "https://verifier.authbound.io"
+      PUBLIC_URL: "https://verifier.authbound.io"
+      BASE_URL: "https://verifier.authbound.io"
+      NODE_ENV: "production"
+    depends_on:
+      - verifier
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:4300 || exit 1"]
       interval: 30s
@@ -35,19 +49,11 @@ services:
       retries: 5
       start_period: 30s
     labels:
-      # Caddy Labels for path-based routing via caddy-docker-proxy
       - caddy=verifier.authbound.io
-      - caddy.reverse_proxy=/api/*{{upstreams verifier-backend:8080}}
-      - caddy.reverse_proxy.1=/ui/*{{upstreams verifier-backend:8080}}
-      - caddy.reverse_proxy.2=/wallet/*{{upstreams verifier-backend:8080}}
-      - caddy.reverse_proxy.3=/*{{upstreams verifier-ui:4300}}
+      - caddy.reverse_proxy=/* {{upstreams 4300}}
     networks:
       - coolify
 
-# Optional: Add under 'verifier' service if backend port isn't inferred
-# labels:
-#   - "traefik.http.services.verifier-backend@docker.loadbalancer.server.port=8080"
-
 networks:
   coolify:
-    external: true
+    external: true 
