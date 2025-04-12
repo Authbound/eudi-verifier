@@ -4,8 +4,6 @@ services:
   verifier:
     image: ghcr.io/eu-digital-identity-wallet/eudi-srv-web-verifier-endpoint-23220-4-kt:latest
     container_name: verifier-backend
-    ports:
-      - "8080:8080"
     environment:
       VERIFIER_PUBLICURL: "https://verifier.authbound.io"
       VERIFIER_RESPONSE_MODE: "DirectPost"
@@ -26,8 +24,6 @@ services:
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
     restart: unless-stopped
-    ports:
-      - "4300:4300"
     environment:
       - DOMAIN_NAME=""
       - HOST_API="https://verifier.authbound.io"
@@ -42,10 +38,10 @@ services:
       start_period: 30s
     labels:
       - caddy=verifier.authbound.io
-      # - caddy.reverse_proxy=/api/*{{upstreams verifier-backend:8080}}
-      - caddy.reverse_proxy.3=/*{{upstreams verifier-ui:4300}}
+      - caddy.reverse_proxy=/api/*{{upstreams verifier-backend:8080}}
       - caddy.reverse_proxy.1=/ui/*{{upstreams verifier-backend:8080}}
       - caddy.reverse_proxy.2=/wallet/*{{upstreams verifier-backend:8080}}
+      - caddy.reverse_proxy.3=/*{{upstreams verifier-ui:4300}}
     networks:
       - coolify
 
