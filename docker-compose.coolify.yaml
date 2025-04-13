@@ -38,7 +38,7 @@ services:
       - coolify 
     environment:
       DOMAIN_NAME: ""     
-      HOST_API: "http://verifier.authbound.io" 
+      HOST_API: "https://verifier.authbound.io" 
     depends_on: 
       - verifier
     healthcheck:
