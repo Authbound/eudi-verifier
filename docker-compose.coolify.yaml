@@ -15,7 +15,7 @@ services:
       VERIFIER_PUBLICURL: "https://verifier.authbound.io"
       VERIFIER_RESPONSE_MODE: "DirectPost"
       SERVER_PORT: "8080"
-      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-prod}"
+      # SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-prod}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
       interval: 30s
@@ -24,9 +24,9 @@ services:
       start_period: 40s
     labels:
       - caddy=verifier.authbound.io
-      - caddy.reverse_proxy=/api/* {{upstreams 8080}}
-      - caddy.reverse_proxy=/wallet/* {{upstreams 8080}}
-      - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
+      - caddy.handle_path=/api/* {{upstreams 8080}}
+      - caddy.handle_path=/wallet/* {{upstreams 8080}}
+      - caddy.handle_path=/ui/* {{upstreams 8080}}
     networks:
       - coolify
 
