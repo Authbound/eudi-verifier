@@ -7,8 +7,8 @@ services:
       dockerfile: Dockerfile
     container_name: verifier-backend
     restart: unless-stopped
-    # ports:
-    #   - "8080:8080"
+    ports:
+      - "8080:8080"
     networks:
       - coolify # Connect to Coolify's network
     environment:
@@ -16,7 +16,7 @@ services:
       VERIFIER_PUBLICURL: "https://verifier.authbound.io" 
       VERIFIER_RESPONSE_MODE: "DirectPost"
       SERVER_PORT: "8080" 
-      # SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-prod}" 
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-prod}" 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
       interval: 30s
@@ -33,8 +33,8 @@ services:
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
     restart: unless-stopped
-    # ports:
-    #   - "4300:4300"
+    ports:
+      - "4300:4300"
     networks:
       - coolify 
     environment:
@@ -43,7 +43,7 @@ services:
       HOST_API: "https://verifier.authbound.io" 
       PUBLIC_URL: "https://verifier.authbound.io" 
       BASE_URL: "https://verifier.authbound.io"  
-      NODE_ENV: "production"
+      # NODE_ENV: "production"
     depends_on: 
       - verifier
     healthcheck:
