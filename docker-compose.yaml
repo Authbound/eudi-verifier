@@ -2,14 +2,17 @@ version: '3.3'
 
 services:
   verifier:
-    image: ghcr.io/eu-digital-identity-wallet/eudi-srv-web-verifier-endpoint-23220-4-kt:latest
+    # image: ghcr.io/eu-digital-identity-wallet/eudi-srv-web-verifier-endpoint-23220-4-kt:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: verifier-backend
     ports:
       - "8080:8080"
     environment:
-      VERIFIER_PUBLICURL: "https://verifier.authbound.io"
-      VERIFIER_RESPONSE_MODE: "DirectPost"
-
+      VERIFIER_PUBLICURL: "http://10.0.2.2:8080"
+      VERIFIER_RESPONSE_MODE: "DirectPost"    
+      
   verifier-ui:
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
@@ -17,20 +20,13 @@ services:
       - "4300:4300"
     environment:
       - DOMAIN_NAME=""
-      - HOST_API="https://verifier.authbound.io"
+      - HOST_API="http://10.0.2.2:8080"
 
   haproxy:
-    image: haproxy:2.7.2
+    image: haproxy:2.8.3
     container_name: haproxy
     ports:
       - "443:443"
     volumes:
-      - ./haproxy.conf:/usr/local/etc/haproxy/haproxy.cfg
-      - ./haproxy.pem:/etc/ssl/certs/mysite.pem
-
-networks:
-  coolify:
-    external: true
-
-
-  
+      - ./docker/haproxy.conf:/usr/local/etc/haproxy/haproxy.cfg
+      - ./docker/haproxy.pem:/etc/ssl/certs/mysite.pem

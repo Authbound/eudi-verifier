@@ -18,6 +18,7 @@ bin/
 !**/src/test/**/bin/
 
 .turbo/
+node_modules/
 
 ### IntelliJ IDEA ###
 .idea

@@ -133,6 +133,7 @@ class WalletApi(
         logger.info("Handling PostWalletResponse ...")
         val requestId = req.requestId()
         val walletResponse = req.awaitFormData().walletResponse()
+        logger.info("Wallet response: $walletResponse")
         postWalletResponse(requestId, walletResponse).fold(
             ifRight = { response ->
                 logger.info("PostWalletResponse processed")

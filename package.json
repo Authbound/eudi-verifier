@@ -1,11 +1,11 @@
 {
-    "name": "@authbound/eudi-verifier",
-    "scripts": {
-        "dev": "docker compose -f docker/docker-compose.yaml up",
-        "dev:detached": "docker compose -f docker/docker-compose.yaml up -d",
-        "stop": "docker compose -f docker/docker-compose.yaml down",
-        "build": "docker compose -f docker/docker-compose.yaml build",
-        "logs": "docker compose -f docker/docker-compose.yaml logs -f",
-        "clean": "docker compose -f docker/docker-compose.yaml down -v"
-    }
+  "name": "@authbound/eudi-verifier",
+  "scripts": {
+    "dev": "docker compose -f docker/docker-compose.yaml up",
+    "dev:detached": "docker compose -f docker/docker-compose.yaml up -d",
+    "stop": "docker compose -f docker/docker-compose.yaml down",
+    "build": "docker compose -f docker/docker-compose.yaml build",
+    "logs": "docker compose -f docker/docker-compose.yaml logs -f",
+    "clean": "docker compose -f docker/docker-compose.yaml down -v"
+  }
 }
