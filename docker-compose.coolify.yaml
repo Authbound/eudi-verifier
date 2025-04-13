@@ -7,10 +7,10 @@ services:
       dockerfile: Dockerfile
     container_name: verifier-backend
     restart: unless-stopped
-    # ports:
-    #   - "8080:8080"
-    # networks:
-    #   - coolify # Connect to Coolify's network
+    ports:
+      - "8080:8080"
+    networks:
+      - coolify # Connect to Coolify's network
     environment:
       VERIFIER_PUBLICURL: "https://verifier.authbound.io" 
       VERIFIER_RESPONSE_MODE: "DirectPost"
@@ -32,10 +32,10 @@ services:
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
     restart: unless-stopped
-    # ports:
-    #   - "4300:4300"
-    # networks:
-    #   - coolify 
+    ports:
+      - "4300:4300"
+    networks:
+      - coolify 
     environment:
       DOMAIN_NAME: "https://verifier-ui.authbound.io"     
       HOST_API: "https://verifier.authbound.io" 
