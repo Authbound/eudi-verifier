@@ -37,7 +37,7 @@ services:
     # networks:
     #   - coolify 
     environment:
-      DOMAIN_NAME: "verifier-ui.authbound.io"     
+      DOMAIN_NAME: "https://verifier-ui.authbound.io"     
       HOST_API: "https://verifier.authbound.io" 
     depends_on: 
       - verifier
