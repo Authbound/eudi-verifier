@@ -7,10 +7,10 @@ services:
       dockerfile: Dockerfile
     container_name: verifier-backend
     restart: unless-stopped
-    ports:
-      - "8080:8080"
-    networks:
-      - coolify # Connect to Coolify's network
+    # ports:
+    #   - "8080:8080"
+    # networks:
+    #   - coolify # Connect to Coolify's network
     environment:
       VERIFIER_PUBLICURL: "https://verifier.authbound.io" 
       VERIFIER_RESPONSE_MODE: "DirectPost"
@@ -22,22 +22,22 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    labels:
-      - caddy=verifier.authbound.io 
-      # - caddy.reverse_proxy=/api/* {{upstreams 8080}}
-      - caddy.reverse_proxy=/wallet/* {{upstreams 8080}}
-      - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
+    # labels:
+    #   - caddy=verifier.authbound.io 
+    #   # - caddy.reverse_proxy=/api/* {{upstreams 8080}}
+    #   - caddy.reverse_proxy=/wallet/* {{upstreams 8080}}
+    #   - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
 
   verifier-ui: 
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
     restart: unless-stopped
-    ports:
-      - "4300:4300"
-    networks:
-      - coolify 
+    # ports:
+    #   - "4300:4300"
+    # networks:
+    #   - coolify 
     environment:
-      DOMAIN_NAME: ""     
+      DOMAIN_NAME: "verifier-ui.authbound.io"     
       HOST_API: "https://verifier.authbound.io" 
     depends_on: 
       - verifier
@@ -47,11 +47,11 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
-    labels:
-      - caddy=verifier.authbound.io 
-      - caddy.reverse_proxy=/* {{upstreams 4300}}
+    # labels:
+    #   - caddy=verifier-ui.authbound.io 
+      
 
 
-networks:
-  coolify:
-    external: true
+# networks:
+#   coolify:
+#     external: true
