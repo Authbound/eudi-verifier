@@ -24,10 +24,7 @@ services:
       start_period: 40s
     labels:
       - caddy=verifier.authbound.io 
-      - caddy.handle_path=/*
-    #   - caddy.reverse_proxy=/api/* {{upstreams 8080}}
-    #   - caddy.reverse_proxy=/wallet/* {{upstreams 8080}}
-    #   - caddy.reverse_proxy=/ui/* {{upstreams 8080}}
+      - caddy.reverse_proxy=/* {{upstreams 8080}}
 
   verifier-ui: 
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
@@ -38,7 +35,7 @@ services:
     networks:
       - coolify 
     environment:
-      DOMAIN_NAME: "https://verifier-ui.authbound.io"     
+      DOMAIN_NAME: ""     
       HOST_API: "https://verifier.authbound.io" 
     depends_on: 
       - verifier
@@ -50,7 +47,7 @@ services:
       start_period: 30s
     labels:
       - caddy=verifier-ui.authbound.io
-      - caddy.handle_path=/*
+      - caddy.reverse_proxy=/* {{upstreams 4300}}
       
 
 
