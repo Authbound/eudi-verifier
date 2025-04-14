@@ -52,6 +52,6 @@ services:
       
 
 
-# networks:
-#   coolify:
-#     external: true
+networks:
+  coolify:
+    external: true
