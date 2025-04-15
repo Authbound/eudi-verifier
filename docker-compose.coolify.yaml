@@ -7,8 +7,8 @@ services:
       dockerfile: Dockerfile
     container_name: verifier-backend
     restart: unless-stopped
-    ports:
-      - "8080:8080"
+    # ports:
+    #   - "8080:8080"
     networks:
       - coolify # Connect to Coolify's network
     environment:
@@ -24,14 +24,15 @@ services:
       start_period: 40s
     labels:
       - caddy=verifier.authbound.io 
+      - caddy.handle_path=/*
       
 
   verifier-ui: 
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
     container_name: verifier-ui
     restart: unless-stopped
-    ports:
-      - "4300:4300"
+    # ports:
+    #   - "4300:4300"
     networks:
       - coolify 
     environment:
@@ -47,7 +48,7 @@ services:
       start_period: 30s
     labels:
       - caddy=verifier-ui.authbound.io
-      
+      - caddy.handle_path=/*
       
 
 
