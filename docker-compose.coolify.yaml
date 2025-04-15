@@ -36,11 +36,9 @@ services:
     networks:
       - coolify 
     environment:
-      DOMAIN_NAME: "verifier-ui.authbound.io"     
-      HOST_API: "https://verifier.authbound.io" 
-      PUBLIC_URL: "https://verifier-ui.authbound.io"
-      BASE_URL: "https://verifier-ui.authbound.io"
-      NODE_ENV: "production"
+      - DOMAIN_NAME=""
+      - HOST_API="https://verifier.authbound.io"
+
     depends_on: 
       - verifier
     healthcheck:
