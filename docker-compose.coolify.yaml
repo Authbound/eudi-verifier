@@ -17,14 +17,14 @@ services:
       # SERVER_PORT: "8080" 
       # SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-prod}" 
     healthcheck:
-      test: ["CMD", "curl", "-f", "https://localhost:8080/actuator/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
     labels:
       - caddy=verifier.authbound.io 
-      - caddy.handle_path=/*
+      - caddy.reverse_proxy={{upstreams 8080}}
       
 
   verifier-ui: 
@@ -36,8 +36,11 @@ services:
     networks:
       - coolify 
     environment:
-      DOMAIN_NAME: ""     
+      DOMAIN_NAME: "verifier-ui.authbound.io"     
       HOST_API: "https://verifier.authbound.io" 
+      PUBLIC_URL: "https://verifier-ui.authbound.io"
+      BASE_URL: "https://verifier-ui.authbound.io"
+      NODE_ENV: "production"
     depends_on: 
       - verifier
     healthcheck:
@@ -48,7 +51,7 @@ services:
       start_period: 30s
     labels:
       - caddy=verifier-ui.authbound.io
-      - caddy.handle_path=/*
+      - caddy.reverse_proxy={{upstreams 4300}}
       
 
 
