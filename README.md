@@ -20,7 +20,7 @@ the [EUDI Wallet Reference Implementation project description](https://github.co
  
 ## Overview
 
-This is a Web application (Backend Restful service) that acts as a Verifier/RP trusted end-point. 
+This is a Web application (Backend Restful service) that acts as a Verifier/RP trusted end-point that implements [OpenId4VP (draft 24)](https://openid.net/specs/openid-4-verifiable-presentations-1_0-24.html) protocol. 
 This backend service is accompanied by a Web UI application implemented [here](https://github.com/eu-digital-identity-wallet/eudi-web-verifier). 
 
 See section [Run all verifier components together](#run-all-verifier-components-together) on how to boot both applications together.
@@ -257,6 +257,14 @@ An endpoint to control the content of the authorization request that will be pre
 - `request_uri_method`: Optional. When `post`, `request_uri_method` for the Transaction is `post`, when `get` `request_uri_method` for the Transaction is `get`. Applicable only when `jar_mode` is `by_reference`. If omitted, defaults to `VERIFIER_REQUESTJWT_REQUESTURIMETHOD`  
 - `presentation_definition_mode`: Controls how the presentation definition will be embedded in the request. If 'by_value' it will be embedded inline, if `by_reference` a `presentation_definition_uri` url will be embedded in the request.
 - `wallet_response_redirect_uri_template`: If provided will be used to construct the response to wallet, when it posts its response to the authorization request.   
+- `issuer_chain`: If provided, a PEM encoded X509 Certificate chain (including start and end markers) of a Verifiable Credential Issuer trusted during this Transaction.
+- `authorization_request_scheme`: If provided, it will be used as the scheme part of the URI contained inside the QR code
+
+This endpoint can produce either JSON or a QR code depending on the Accept header received. It can either:
+
+- Produce a JSON object with the details of the authorization request.
+- Produce a PNG QR code containing the authorization request URI.
+
 
 **Usage:**
 
@@ -274,7 +282,7 @@ curl -X POST -H "Content-type: application/json" -d '{
                         {
                             "intent_to_retain": false,
                             "path": [
-                                "$['eu.europa.ec.eudi.pid.1']['family_name']"
+                                "$['\''eu.europa.ec.eudi.pid.1'\'']['\''family_name'\'']"
                             ]
                         }
                     ]
@@ -289,7 +297,7 @@ curl -X POST -H "Content-type: application/json" -d '{
                       "EdDSA"
                     ]
                   }
-                }
+                },
                 "name": "EUDI PID",
                 "purpose": "We need to verify your identity"
             }
@@ -298,7 +306,8 @@ curl -X POST -H "Content-type: application/json" -d '{
   "dcql_query": null,
   "nonce": "nonce",
   "jar_mode": "by_reference",
-  "request_uri_method": "post"
+  "request_uri_method": "post",
+  "issuer_chain": "-----BEGIN CERTIFICATE-----\nMIIDHTCCAqOgAwIBAgIUVqjgtJqf4hUYJkqdYzi+0xwhwFYwCgYIKoZIzj0EAwMw\nXDEeMBwGA1UEAwwVUElEIElzc3VlciBDQSAtIFVUIDAxMS0wKwYDVQQKDCRFVURJ\nIFdhbGxldCBSZWZlcmVuY2UgSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMB4X\nDTIzMDkwMTE4MzQxN1oXDTMyMTEyNzE4MzQxNlowXDEeMBwGA1UEAwwVUElEIElz\nc3VlciBDQSAtIFVUIDAxMS0wKwYDVQQKDCRFVURJIFdhbGxldCBSZWZlcmVuY2Ug\nSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMHYwEAYHKoZIzj0CAQYFK4EEACID\nYgAEFg5Shfsxp5R/UFIEKS3L27dwnFhnjSgUh2btKOQEnfb3doyeqMAvBtUMlClh\nsF3uefKinCw08NB31rwC+dtj6X/LE3n2C9jROIUN8PrnlLS5Qs4Rs4ZU5OIgztoa\nO8G9o4IBJDCCASAwEgYDVR0TAQH/BAgwBgEB/wIBADAfBgNVHSMEGDAWgBSzbLiR\nFxzXpBpmMYdC4YvAQMyVGzAWBgNVHSUBAf8EDDAKBggrgQICAAABBzBDBgNVHR8E\nPDA6MDigNqA0hjJodHRwczovL3ByZXByb2QucGtpLmV1ZGl3LmRldi9jcmwvcGlk\nX0NBX1VUXzAxLmNybDAdBgNVHQ4EFgQUs2y4kRcc16QaZjGHQuGLwEDMlRswDgYD\nVR0PAQH/BAQDAgEGMF0GA1UdEgRWMFSGUmh0dHBzOi8vZ2l0aHViLmNvbS9ldS1k\naWdpdGFsLWlkZW50aXR5LXdhbGxldC9hcmNoaXRlY3R1cmUtYW5kLXJlZmVyZW5j\nZS1mcmFtZXdvcmswCgYIKoZIzj0EAwMDaAAwZQIwaXUA3j++xl/tdD76tXEWCikf\nM1CaRz4vzBC7NS0wCdItKiz6HZeV8EPtNCnsfKpNAjEAqrdeKDnr5Kwf8BA7tATe\nhxNlOV4Hnc10XO1XULtigCwb49RpkqlS2Hul+DpqObUs\n-----END CERTIFICATE-----"
 }' 'http://localhost:8080/ui/presentations'
 ```
 
@@ -336,7 +345,8 @@ curl -X POST -H "Content-type: application/json" -d '{
   },
   "nonce": "nonce",
   "jar_mode": "by_reference",
-  "request_uri_method": "post"
+  "request_uri_method": "post",
+  "issuer_chain": "-----BEGIN CERTIFICATE-----\nMIIDHTCCAqOgAwIBAgIUVqjgtJqf4hUYJkqdYzi+0xwhwFYwCgYIKoZIzj0EAwMw\nXDEeMBwGA1UEAwwVUElEIElzc3VlciBDQSAtIFVUIDAxMS0wKwYDVQQKDCRFVURJ\nIFdhbGxldCBSZWZlcmVuY2UgSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMB4X\nDTIzMDkwMTE4MzQxN1oXDTMyMTEyNzE4MzQxNlowXDEeMBwGA1UEAwwVUElEIElz\nc3VlciBDQSAtIFVUIDAxMS0wKwYDVQQKDCRFVURJIFdhbGxldCBSZWZlcmVuY2Ug\nSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMHYwEAYHKoZIzj0CAQYFK4EEACID\nYgAEFg5Shfsxp5R/UFIEKS3L27dwnFhnjSgUh2btKOQEnfb3doyeqMAvBtUMlClh\nsF3uefKinCw08NB31rwC+dtj6X/LE3n2C9jROIUN8PrnlLS5Qs4Rs4ZU5OIgztoa\nO8G9o4IBJDCCASAwEgYDVR0TAQH/BAgwBgEB/wIBADAfBgNVHSMEGDAWgBSzbLiR\nFxzXpBpmMYdC4YvAQMyVGzAWBgNVHSUBAf8EDDAKBggrgQICAAABBzBDBgNVHR8E\nPDA6MDigNqA0hjJodHRwczovL3ByZXByb2QucGtpLmV1ZGl3LmRldi9jcmwvcGlk\nX0NBX1VUXzAxLmNybDAdBgNVHQ4EFgQUs2y4kRcc16QaZjGHQuGLwEDMlRswDgYD\nVR0PAQH/BAQDAgEGMF0GA1UdEgRWMFSGUmh0dHBzOi8vZ2l0aHViLmNvbS9ldS1k\naWdpdGFsLWlkZW50aXR5LXdhbGxldC9hcmNoaXRlY3R1cmUtYW5kLXJlZmVyZW5j\nZS1mcmFtZXdvcmswCgYIKoZIzj0EAwMDaAAwZQIwaXUA3j++xl/tdD76tXEWCikf\nM1CaRz4vzBC7NS0wCdItKiz6HZeV8EPtNCnsfKpNAjEAqrdeKDnr5Kwf8BA7tATe\nhxNlOV4Hnc10XO1XULtigCwb49RpkqlS2Hul+DpqObUs\n-----END CERTIFICATE-----"
 }' 'http://localhost:8080/ui/presentations'
 ```
 
@@ -348,6 +358,50 @@ curl -X POST -H "Content-type: application/json" -d '{
   "request_uri": "https://localhost:8080/wallet/request.jwt/5N6E7VZsmwXOGLz1Xlfi96MoyZVC3FZxwdAuJ26DnGcan-vYs-VAKErioQ58BWEsKlVw2_X49jpZHyp0Mk9nKw",
   "request_uri_method": "post"
 }
+```
+
+
+To generate a qr code use the following example:
+
+```bash
+curl -X POST -H "Content-type: application/json" -H "Accept: image/png" -d '{
+  "type": "vp_token",  
+  "presentation_definition": {
+        "id": "32f54163-7166-48f1-93d8-ff217bdb0653",
+        "input_descriptors": [
+            {
+                "constraints": {
+                    "fields": [
+                        {
+                            "intent_to_retain": false,
+                            "path": [
+                                "$['\''eu.europa.ec.eudi.pid.1'\'']['\''family_name'\'']"
+                            ]
+                        }
+                    ]
+                },
+                "id": "eu.europa.ec.eudi.pid.1",
+                "format": {
+                  "mso_mdoc": {
+                    "alg": [
+                      "ES256",
+                      "ES384",
+                      "ES512",
+                      "EdDSA"
+                    ]
+                  }
+                },
+                "name": "EUDI PID",
+                "purpose": "We need to verify your identity"
+            }
+        ]
+  },
+  "dcql_query": null,
+  "nonce": "nonce",
+  "jar_mode": "by_reference",
+  "request_uri_method": "post",
+  "issuer_chain": "-----BEGIN CERTIFICATE-----\nMIIDHTCCAqOgAwIBAgIUVqjgtJqf4hUYJkqdYzi+0xwhwFYwCgYIKoZIzj0EAwMw\nXDEeMBwGA1UEAwwVUElEIElzc3VlciBDQSAtIFVUIDAxMS0wKwYDVQQKDCRFVURJ\nIFdhbGxldCBSZWZlcmVuY2UgSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMB4X\nDTIzMDkwMTE4MzQxN1oXDTMyMTEyNzE4MzQxNlowXDEeMBwGA1UEAwwVUElEIElz\nc3VlciBDQSAtIFVUIDAxMS0wKwYDVQQKDCRFVURJIFdhbGxldCBSZWZlcmVuY2Ug\nSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMHYwEAYHKoZIzj0CAQYFK4EEACID\nYgAEFg5Shfsxp5R/UFIEKS3L27dwnFhnjSgUh2btKOQEnfb3doyeqMAvBtUMlClh\nsF3uefKinCw08NB31rwC+dtj6X/LE3n2C9jROIUN8PrnlLS5Qs4Rs4ZU5OIgztoa\nO8G9o4IBJDCCASAwEgYDVR0TAQH/BAgwBgEB/wIBADAfBgNVHSMEGDAWgBSzbLiR\nFxzXpBpmMYdC4YvAQMyVGzAWBgNVHSUBAf8EDDAKBggrgQICAAABBzBDBgNVHR8E\nPDA6MDigNqA0hjJodHRwczovL3ByZXByb2QucGtpLmV1ZGl3LmRldi9jcmwvcGlk\nX0NBX1VUXzAxLmNybDAdBgNVHQ4EFgQUs2y4kRcc16QaZjGHQuGLwEDMlRswDgYD\nVR0PAQH/BAQDAgEGMF0GA1UdEgRWMFSGUmh0dHBzOi8vZ2l0aHViLmNvbS9ldS1k\naWdpdGFsLWlkZW50aXR5LXdhbGxldC9hcmNoaXRlY3R1cmUtYW5kLXJlZmVyZW5j\nZS1mcmFtZXdvcmswCgYIKoZIzj0EAwMDaAAwZQIwaXUA3j++xl/tdD76tXEWCikf\nM1CaRz4vzBC7NS0wCdItKiz6HZeV8EPtNCnsfKpNAjEAqrdeKDnr5Kwf8BA7tATe\nhxNlOV4Hnc10XO1XULtigCwb49RpkqlS2Hul+DpqObUs\n-----END CERTIFICATE-----"
+}' 'http://localhost:8080/ui/presentations'
 ```
 
 You can also try it out in [Swagger UI](http://localhost:8080/swagger-ui#/verifier%20api/initializeTransaction).
@@ -648,6 +702,11 @@ Description: Age of Authorization Requests. Authorization Requests older than th
 Notes: Provide a value using Java Duration syntax  
 Example: `P10D`  
 Default value: `P10D`
+
+Variable: `VERIFIER_AUTHORIZATIONREQUESTSCHEME`  
+Description: The Authorization Request Scheme to be used for the QR code generation process.      
+Example: `eudi-openid4vp`  
+Default value: `eudi-openid4vp`
 
 Variable: `VERIFIER_CLIENTMETADATA_AUTHORIZATIONSIGNEDRESPONSEALG`  
 Description: Accept only Authorization Responses that are _signed_ using this algorithm  

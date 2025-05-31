@@ -1,18 +1,17 @@
 import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 import org.owasp.dependencycheck.gradle.extension.DependencyCheckExtension
+import org.springframework.boot.gradle.plugin.SpringBootPlugin
 import org.springframework.boot.gradle.tasks.bundling.BootBuildImage
 
 plugins {
     base
     alias(libs.plugins.spring.boot)
-    alias(libs.plugins.spring.dependency.management)
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.plugin.spring)
     alias(libs.plugins.kotlin.plugin.serialization)
     alias(libs.plugins.spotless)
-    alias(libs.plugins.sonarqube)
+    alias(libs.plugins.kover)
     alias(libs.plugins.dependencycheck)
-    jacoco
 }
 
 repositories {
@@ -26,6 +25,10 @@ repositories {
 }
 
 dependencies {
+    implementation(platform(SpringBootPlugin.BOM_COORDINATES))
+    implementation(platform("org.jetbrains.kotlinx:kotlinx-serialization-bom:${libs.versions.kotlinxSerialization.get()}"))
+
+    implementation("org.springframework.boot:spring-boot-starter-webflux")
     implementation("org.springframework.boot:spring-boot-starter-webflux")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
@@ -63,6 +66,8 @@ dependencies {
     implementation(libs.statium) {
         because("Get value in a position of a status list token")
     }
+    implementation(libs.zxing)
+    implementation(libs.uri)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)
@@ -91,30 +96,12 @@ kotlin {
     }
 }
 
-tasks.test {
-    finalizedBy(tasks.jacocoTestReport)
-}
-
-tasks.jacocoTestReport {
-    dependsOn(tasks.test)
-
-    reports {
-        xml.required = true
-        csv.required = true
-        html.required = true
-    }
-}
-
 testing {
     suites {
         val test by getting(JvmTestSuite::class) {
             useJUnitJupiter()
         }
     }
-}
-
-jacoco {
-    toolVersion = libs.versions.jacoco.get()
 }
 
 springBoot {

@@ -22,19 +22,14 @@ import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.*
 import com.nimbusds.jose.jwk.gen.ECKeyGenerator
 import com.nimbusds.jose.util.Base64
-import com.nimbusds.jwt.SignedJWT
-import eu.europa.ec.eudi.sdjwt.NimbusSdJwtOps
 import eu.europa.ec.eudi.sdjwt.vc.DefaultHttpClientFactory
 import eu.europa.ec.eudi.sdjwt.vc.KtorHttpClientFactory
-import eu.europa.ec.eudi.sdjwt.vc.SdJwtVcVerifier
-import eu.europa.ec.eudi.sdjwt.vc.X509CertificateTrust
 import eu.europa.ec.eudi.verifier.endpoint.EmbedOptionEnum.ByReference
 import eu.europa.ec.eudi.verifier.endpoint.EmbedOptionEnum.ByValue
 import eu.europa.ec.eudi.verifier.endpoint.adapter.input.timer.ScheduleDeleteOldPresentations
 import eu.europa.ec.eudi.verifier.endpoint.adapter.input.timer.ScheduleTimeoutPresentations
 import eu.europa.ec.eudi.verifier.endpoint.adapter.input.web.*
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CShouldBe
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cfg.GenerateRequestIdNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cfg.GenerateTransactionIdNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.CreateJarNimbus
@@ -48,6 +43,10 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.IssuerSignedItemsShou
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.ValidityInfoShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.persistence.PresentationInMemoryRepo
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.presentation.ValidateSdJwtVcOrMsoMdocVerifiablePresentation
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.qrcode.GenerateQrCodeFromData
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.SdJwtVcValidator
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.StatusListTokenValidator
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.ParsePemEncodedX509CertificateChainWithNimbus
 import eu.europa.ec.eudi.verifier.endpoint.domain.*
 import eu.europa.ec.eudi.verifier.endpoint.port.input.*
 import eu.europa.ec.eudi.verifier.endpoint.port.out.cfg.CreateQueryWalletResponseRedirectUri
@@ -63,6 +62,7 @@ import org.apache.http.conn.ssl.TrustSelfSignedStrategy
 import org.apache.http.ssl.SSLContextBuilder
 import org.slf4j.LoggerFactory
 import org.springframework.boot.web.codec.CodecCustomizer
+import org.springframework.context.support.BeanDefinitionDsl.BeanSupplierContext
 import org.springframework.context.support.beans
 import org.springframework.core.env.Environment
 import org.springframework.core.env.getProperty
@@ -84,6 +84,8 @@ private val log = LoggerFactory.getLogger(VerifierApplication::class.java)
 
 @OptIn(ExperimentalSerializationApi::class)
 internal fun beans(clock: Clock) = beans {
+    bean { clock }
+
     val trustedIssuers: KeyStore? by lazy {
         env.getProperty("trustedIssuers.keystore.path")
             ?.takeIf { it.isNotBlank() }
@@ -135,23 +137,7 @@ internal fun beans(clock: Clock) = beans {
         log.warn("Using Ktor HttpClients that trust self-signed certificates and perform no hostname verification")
         bean<KtorHttpClientFactory> {
             {
-                HttpClient(Apache) {
-                    install(ContentNegotiation) {
-                        json(jsonSupport)
-                    }
-                    expectSuccess = true
-                    engine {
-                        followRedirects = true
-                        customizeClient {
-                            setSSLContext(
-                                SSLContextBuilder.create()
-                                    .loadTrustMaterial(TrustSelfSignedStrategy.INSTANCE)
-                                    .build(),
-                            )
-                            setSSLHostnameVerifier(NoopHostnameVerifier.INSTANCE)
-                        }
-                    }
-                }
+                createHttpClient(trustSelfSigned = true)
             }
         }
     }
@@ -160,6 +146,9 @@ internal fun beans(clock: Clock) = beans {
             DefaultHttpClientFactory
         }
     }
+
+    // X509
+    bean { ParsePemEncodedX509CertificateChainWithNimbus }
 
     //
     // Use cases
@@ -171,24 +160,26 @@ internal fun beans(clock: Clock) = beans {
             ref(),
             ref(),
             ref(),
-            clock,
+            ref(),
             ref(),
             WalletApi.requestJwtByReference(env.publicUrl()),
             WalletApi.presentationDefinitionByReference(env.publicUrl()),
             ref(),
             ref(),
+            ref(),
+            ref(),
         )
     }
 
-    bean { RetrieveRequestObjectLive(ref(), ref(), ref(), ref(), clock, ref(), ref()) }
+    bean { RetrieveRequestObjectLive(ref(), ref(), ref(), ref(), ref(), ref(), ref()) }
 
-    bean { GetPresentationDefinitionLive(clock, ref(), ref()) }
+    bean { GetPresentationDefinitionLive(ref(), ref(), ref()) }
     bean {
         TimeoutPresentationsLive(
             ref(),
             ref(),
             ref<VerifierConfig>().maxAge,
-            clock,
+            ref(),
             ref(),
         )
     }
@@ -196,64 +187,74 @@ internal fun beans(clock: Clock) = beans {
         val maxAge = Duration.parse(env.getProperty("verifier.presentations.cleanup.maxAge", "P10D"))
         require(!maxAge.isZero && !maxAge.isNegative) { "'verifier.presentations.cleanup.maxAge' cannot be zero or negative" }
 
-        DeleteOldPresentationsLive(clock, maxAge, ref())
+        DeleteOldPresentationsLive(ref(), maxAge, ref())
     }
 
     bean { GenerateResponseCode.Random }
-    bean { PostWalletResponseLive(ref(), ref(), ref(), clock, ref(), ref(), ref(), ref(), ref()) }
+    bean { PostWalletResponseLive(ref(), ref(), ref(), ref(), ref(), ref(), ref(), ref(), ref()) }
     bean { GenerateEphemeralEncryptionKeyPairNimbus }
-    bean { GetWalletResponseLive(clock, ref(), ref()) }
+    bean { GetWalletResponseLive(ref(), ref(), ref()) }
     bean { GetPresentationEventsLive(ref(), ref()) }
     bean(::GetClientMetadataLive)
+
+    if (env.getProperty("verifier.validation.sdJwtVc.statusCheck.enabled", true)) {
+        log.info("Enabling Status List Token validations")
+        bean<StatusListTokenValidator> {
+            val selfSignedProfileActive = env.activeProfiles.contains("self-signed")
+            val httpClientFactory = if (selfSignedProfileActive) {
+                { createHttpClient(withJsonContentNegotiation = false, trustSelfSigned = true) }
+            } else {
+                { createHttpClient(withJsonContentNegotiation = false, trustSelfSigned = false) }
+            }
+            StatusListTokenValidator(httpClientFactory, clock, ref())
+        }
+    }
+
+    // Default DeviceResponseValidator
     bean<DeviceResponseValidator> {
         val x5cShouldBe = trustedIssuers?.let { X5CShouldBe.fromKeystore(it) } ?: X5CShouldBe.Ignored
-        val docValidator = DocumentValidator(
-            clock = clock,
-            issuerSignedItemsShouldBe = IssuerSignedItemsShouldBe.Verified,
-            validityInfoShouldBe = ValidityInfoShouldBe.NotExpired,
-            x5CShouldBe = x5cShouldBe,
-        )
-
-        log.info(
-            "Created DocumentValidator using: \n\t" +
-                "IssuerSignedItemsShouldBe: '${IssuerSignedItemsShouldBe.Verified}', \n\t" +
-                "ValidityInfoShouldBe: '${ValidityInfoShouldBe.NotExpired}', and \n\t" +
-                "X5CShouldBe '$x5cShouldBe'",
-        )
-        DeviceResponseValidator(docValidator)
+        deviceResponseValidator(x5cShouldBe)
     }
-    bean<SdJwtVcVerifier<SignedJWT>> {
+
+    // Default SdJwtVcValidator
+    bean<SdJwtVcValidator> {
         val x5CShouldBe = trustedIssuers?.let {
             X5CShouldBe.fromKeystore(it) {
                 isRevocationEnabled = false
             }
         } ?: X5CShouldBe.Ignored
-        val x5cValidator = X5CValidator(x5CShouldBe)
-        val x509CertificateTrust = X509CertificateTrust { chain ->
-            chain.toNonEmptyListOrNull()?.let {
-                x5cValidator.ensureTrusted(it).fold(
-                    ifLeft = { _ -> false },
-                    ifRight = { _ -> true },
-                )
-            } ?: false
-        }
-        NimbusSdJwtOps.SdJwtVcVerifier.usingX5cOrIssuerMetadata(
-            x509CertificateTrust = x509CertificateTrust,
-            httpClientFactory = ref(),
+        sdJwtVcValidator(x5CShouldBe)
+    }
+
+    bean {
+        ValidateMsoMdocDeviceResponse(
+            ref(),
+            ref(),
+            deviceResponseValidatorFactory = { trustedIssuers ->
+                trustedIssuers?.let { deviceResponseValidator(it) } ?: ref()
+            },
         )
     }
-    bean { ValidateMsoMdocDeviceResponse(clock, ref()) }
     bean {
         ValidateSdJwtVc(
+            sdJwtVcValidatorFactory = { trustedIssuers ->
+                trustedIssuers?.let { sdJwtVcValidator(it) } ?: ref()
+            },
             ref(),
-            ref(),
-            ref<VerifierConfig>().verifierId.clientId,
-            ref(),
-            clock,
-            ref<VerifierConfig>().validation.sdJwtVc.statusCheckEnabled,
         )
     }
-    bean { ValidateSdJwtVcOrMsoMdocVerifiablePresentation(ref(), ref(), ref()) }
+
+    bean {
+        ValidateSdJwtVcOrMsoMdocVerifiablePresentation(
+            config = ref(),
+            sdJwtVcValidatorFactory = { trustedIssuers ->
+                trustedIssuers?.let { sdJwtVcValidator(it) } ?: ref()
+            },
+            deviceResponseValidatorFactory = { trustedIssuers ->
+                trustedIssuers?.let { deviceResponseValidator(it) } ?: ref()
+            },
+        )
+    }
 
     //
     // Scheduled
@@ -264,7 +265,7 @@ internal fun beans(clock: Clock) = beans {
     //
     // Config
     //
-    bean { verifierConfig(env, clock) }
+    bean { verifierConfig(env, ref()) }
 
     //
     // End points
@@ -291,6 +292,11 @@ internal fun beans(clock: Clock) = beans {
             .and(swaggerUi.route)
             .and(utilityApi.route)
     }
+
+    //
+    // QRCode
+    //
+    bean { GenerateQrCodeFromData }
 
     //
     // Other
@@ -333,6 +339,29 @@ internal fun beans(clock: Clock) = beans {
         }
     }
 }
+
+private fun BeanSupplierContext.deviceResponseValidator(trustedIssuers: X5CShouldBe): DeviceResponseValidator {
+    val docValidator = DocumentValidator(
+        clock = ref(),
+        issuerSignedItemsShouldBe = IssuerSignedItemsShouldBe.Verified,
+        validityInfoShouldBe = ValidityInfoShouldBe.NotExpired,
+        x5CShouldBe = trustedIssuers,
+    )
+    log.info(
+        "Created DocumentValidator using: \n\t" +
+            "IssuerSignedItemsShouldBe: '${IssuerSignedItemsShouldBe.Verified}', \n\t" +
+            "ValidityInfoShouldBe: '${ValidityInfoShouldBe.NotExpired}', and \n\t" +
+            "X5CShouldBe '$trustedIssuers'",
+    )
+    return DeviceResponseValidator(docValidator)
+}
+
+private fun BeanSupplierContext.sdJwtVcValidator(trustedIssuers: X5CShouldBe): SdJwtVcValidator =
+    SdJwtVcValidator(
+        trustedIssuers = trustedIssuers,
+        audience = ref<VerifierConfig>().verifierId,
+        provider<StatusListTokenValidator>().ifAvailable,
+    )
 
 private enum class EmbedOptionEnum {
     ByValue,
@@ -458,8 +487,9 @@ private fun verifierConfig(environment: Environment, clock: Clock): VerifierConf
             }
         }
 
-    val validation = environment.getProperty("verifier.validation.sdJwtVc.statusCheck.enabled", true)
-        .let { configured -> Validation(sdJwtVc = Validation.SdJwtVc(configured)) }
+    val authorizationRequestScheme = environment.getProperty("verifier.authorizationRequestScheme", "eudi-openid4vp").also {
+        require(!it.endsWith("://") && it.isNotBlank()) { "'verifier.authorizationRequestScheme' must not contain '://' or be blank." }
+    }
 
     return VerifierConfig(
         verifierId = verifierId,
@@ -471,7 +501,7 @@ private fun verifierConfig(environment: Environment, clock: Clock): VerifierConf
         maxAge = maxAge,
         clientMetaData = environment.clientMetaData(),
         transactionDataHashAlgorithm = transactionDataHashAlgorithm,
-        validation = validation,
+        authorizationRequestScheme = authorizationRequestScheme,
     )
 }
 
@@ -569,3 +599,32 @@ private fun Environment.getOptionalList(
         ?.filter { filter(it) }
         ?.map { transform(it) }
         ?.toNonEmptyListOrNull()
+
+/**
+ * Creates an HttpClient that trusts self-signed certificates and performs no hostname verification.
+ *
+ * @param withJsonContentNegotiation if true, installs ContentNegotiation with JSON support
+ * @param trustSelfSigned if true, configures the client to trust self-signed certificates and perform no hostname verification
+ */
+private fun createHttpClient(withJsonContentNegotiation: Boolean = true, trustSelfSigned: Boolean = false): HttpClient =
+    HttpClient(Apache) {
+        if (withJsonContentNegotiation) {
+            install(ContentNegotiation) {
+                json(jsonSupport)
+            }
+        }
+        expectSuccess = true
+        engine {
+            followRedirects = true
+            if (trustSelfSigned) {
+                customizeClient {
+                    setSSLContext(
+                        SSLContextBuilder.create()
+                            .loadTrustMaterial(TrustSelfSignedStrategy.INSTANCE)
+                            .build(),
+                    )
+                    setSSLHostnameVerifier(NoopHostnameVerifier.INSTANCE)
+                }
+            }
+        }
+    }

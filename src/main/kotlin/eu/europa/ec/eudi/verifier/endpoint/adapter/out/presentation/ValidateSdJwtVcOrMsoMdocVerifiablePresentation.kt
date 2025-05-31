@@ -17,29 +17,39 @@ package eu.europa.ec.eudi.verifier.endpoint.adapter.out.presentation
 
 import arrow.core.Either
 import arrow.core.NonEmptyList
+import arrow.core.raise.Raise
 import arrow.core.raise.either
 import arrow.core.raise.ensure
+import arrow.core.raise.ensureNotNull
 import com.nimbusds.jose.JWSAlgorithm
+import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.SignedJWT
-import eu.europa.ec.eudi.sdjwt.SdJwtAndKbJwt
 import eu.europa.ec.eudi.sdjwt.SdJwtVcSpec
+import eu.europa.ec.eudi.sdjwt.SdJwtVerificationException
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.digest.hash
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.encoding.base64UrlNoPadding
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.json.jsonSupport
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DeviceResponseError
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DeviceResponseValidator
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.SdJwtVcValidationError
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.SdJwtVcValidator
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.StatusCheckException
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.description
 import eu.europa.ec.eudi.verifier.endpoint.domain.*
-import eu.europa.ec.eudi.verifier.endpoint.port.input.SdJwtVcValidationResult
-import eu.europa.ec.eudi.verifier.endpoint.port.input.ValidateSdJwtVc
 import eu.europa.ec.eudi.verifier.endpoint.port.input.WalletResponseValidationError
-import eu.europa.ec.eudi.verifier.endpoint.port.input.toJson
 import eu.europa.ec.eudi.verifier.endpoint.port.out.presentation.ValidateVerifiablePresentation
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 
 private val log = LoggerFactory.getLogger(ValidateSdJwtVcOrMsoMdocVerifiablePresentation::class.java)
 
 internal class ValidateSdJwtVcOrMsoMdocVerifiablePresentation(
     private val config: VerifierConfig,
-    private val deviceResponseValidator: DeviceResponseValidator,
-    private val validateSdJwtVc: ValidateSdJwtVc,
+    private val sdJwtVcValidatorFactory: (X5CShouldBe.Trusted?) -> SdJwtVcValidator,
+    private val deviceResponseValidatorFactory: (X5CShouldBe.Trusted?) -> DeviceResponseValidator,
 ) : ValidateVerifiablePresentation {
 
     override suspend fun invoke(
@@ -48,16 +58,28 @@ internal class ValidateSdJwtVcOrMsoMdocVerifiablePresentation(
         vpFormat: VpFormat,
         nonce: Nonce,
         transactionData: NonEmptyList<TransactionData>?,
+        issuerChain: X5CShouldBe.Trusted?,
     ): Either<WalletResponseValidationError, VerifiablePresentation> = either {
         when (verifiablePresentation.format) {
             Format(SdJwtVcSpec.MEDIA_SUBTYPE_VC_SD_JWT), Format.SdJwtVc -> {
                 require(vpFormat is VpFormat.SdJwtVc)
-                validateSdJwtVcVerifiablePresentation(vpFormat, verifiablePresentation, nonce, transactionData, transactionId).bind()
+                val validator = sdJwtVcValidatorFactory(issuerChain)
+                validator.validateSdJwtVcVerifiablePresentation(
+                    vpFormat,
+                    verifiablePresentation,
+                    nonce,
+                    transactionData,
+                    transactionId,
+                ).bind()
             }
 
             Format.MsoMdoc -> {
                 require(vpFormat is VpFormat.MsoMdoc)
-                validateMsoMdocVerifiablePresentation(vpFormat, verifiablePresentation)
+                val validator = deviceResponseValidatorFactory(issuerChain)
+                validator.validateMsoMdocVerifiablePresentation(
+                    vpFormat,
+                    verifiablePresentation,
+                ).bind()
             }
 
             else ->
@@ -65,36 +87,32 @@ internal class ValidateSdJwtVcOrMsoMdocVerifiablePresentation(
         }
     }
 
-    private suspend fun validateSdJwtVcVerifiablePresentation(
+    private suspend fun SdJwtVcValidator.validateSdJwtVcVerifiablePresentation(
         vpFormat: VpFormat.SdJwtVc,
         verifiablePresentation: VerifiablePresentation,
         nonce: Nonce,
         transactionData: NonEmptyList<TransactionData>?,
         transactionId: TransactionId?,
     ): Either<WalletResponseValidationError, VerifiablePresentation> = either {
-        fun SdJwtVcValidationResult.get(): SdJwtAndKbJwt<SignedJWT> =
-            when (this) {
-                is SdJwtVcValidationResult.Valid -> this.payload
-                is SdJwtVcValidationResult.Invalid -> {
-                    val validationFailures = this.toJson().toString()
-                    log.warn("Failed to validate SD-JWT VC: $validationFailures")
-                    raise(WalletResponseValidationError.InvalidVpToken(validationFailures))
-                }
-            }
+        fun invalidVpToken(errors: NonEmptyList<SdJwtVcValidationError>): WalletResponseValidationError {
+            val validationFailures = jsonSupport.encodeToString(errors.toJson())
+            log.warn("Failed to validate SD-JWT VC: $validationFailures")
+            return WalletResponseValidationError.InvalidVpToken(validationFailures)
+        }
 
         val (sdJwt, kbJwt) = when (verifiablePresentation) {
-            is VerifiablePresentation.Str -> validateSdJwtVc(
+            is VerifiablePresentation.Str -> validate(
                 unverified = verifiablePresentation.value,
                 nonce = nonce,
                 transactionId = transactionId,
-            ).get()
+            )
 
-            is VerifiablePresentation.Json -> validateSdJwtVc(
+            is VerifiablePresentation.Json -> validate(
                 unverified = verifiablePresentation.value,
                 nonce = nonce,
                 transactionId = transactionId,
-            ).get()
-        }
+            )
+        }.mapLeft { errors -> invalidVpToken(errors) }.bind()
 
         // Validate that the signing algorithm of sd-jwt-vc matches the algorithm specified in the presentation query
         ensure(sdJwt.jwt.header.algorithm in vpFormat.sdJwtAlgorithms) {
@@ -106,61 +124,100 @@ internal class ValidateSdJwtVcOrMsoMdocVerifiablePresentation(
         }
 
         transactionData?.let {
-            validateTransactionDataHashes(kbJwt, transactionData, config.transactionDataHashAlgorithm)
+            ensureValidTransactionDataHashes(kbJwt, transactionData, config.transactionDataHashAlgorithm) { error ->
+                WalletResponseValidationError.InvalidVpToken(error)
+            }
         }
 
         verifiablePresentation
     }
 
-    private fun validateMsoMdocVerifiablePresentation(
+    private fun DeviceResponseValidator.validateMsoMdocVerifiablePresentation(
         vpFormat: VpFormat.MsoMdoc,
         verifiablePresentation: VerifiablePresentation,
-    ): VerifiablePresentation.Str {
-        require(verifiablePresentation is VerifiablePresentation.Str)
-        return deviceResponseValidator.ensureValid(verifiablePresentation.value)
-            .fold(
-                ifLeft = {
-                    log.warn("Failed to validate MsoMdoc VC. Reason: '$it'")
-                    throw IllegalArgumentException("Invalid MsoMdoc DeviceResponse: '$it'")
-                },
-                ifRight = { documents ->
-                    documents.forEach {
-                        val algorithm = requireNotNull(it.issuerSigned.issuerAuth?.algorithm?.toJwsAlgorithm()) {
-                            "MSO MDoc is not signed"
-                        }
-                        require(algorithm in vpFormat.algorithms) {
-                            "MSO MDoc is not signed with a supported algorithms"
-                        }
-                    }
-                    verifiablePresentation
-                },
-            )
+    ): Either<WalletResponseValidationError, VerifiablePresentation.Str> = either {
+        ensure(verifiablePresentation is VerifiablePresentation.Str) {
+            WalletResponseValidationError.InvalidVpToken("Mso MDoc VC must be a string.")
+        }
+
+        val documents = ensureValid(verifiablePresentation.value)
+            .mapLeft { error ->
+                log.warn("Failed to validate MsoMdoc VC. Reason: '$error'")
+                error.toWalletResponseValidationError()
+            }
+            .bind()
+
+        documents.forEach { document ->
+            val issuerAuth = ensureNotNull(document.issuerSigned.issuerAuth) {
+                WalletResponseValidationError.InvalidVpToken("DeviceResponse contains unsigned MSO MDoc documents")
+            }
+            val algorithm = issuerAuth.algorithm.toJwsAlgorithm().bind()
+            ensure(algorithm in vpFormat.algorithms) {
+                WalletResponseValidationError.InvalidVpToken("MSO MDoc is not signed with a supported algorithms")
+            }
+        }
+        verifiablePresentation
     }
 }
 
-private fun validateTransactionDataHashes(
+private fun JWTClaimsSet.stringClaim(claim: String): Result<String> =
+    runCatching {
+        getStringClaim(claim)
+    }
+
+private fun JWTClaimsSet.stringListClaim(claim: String): Result<List<String>> =
+    runCatching {
+        getStringListClaim(claim)
+    }
+
+private fun <Error> Raise<Error>.ensureValidTransactionDataHashes(
     keyBindingJwt: SignedJWT,
     transactionData: NonEmptyList<TransactionData>,
     hashAlgorithm: HashAlgorithm,
+    convert: (String) -> Error,
 ) {
-    val actualHashAlgorithm = keyBindingJwt.jwtClaimsSet.getStringClaim("transaction_data_hashes_alg")
-    require(hashAlgorithm.ianaName == actualHashAlgorithm) {
-        "'transaction_data_hashes_alg' must be '${hashAlgorithm.ianaName}'"
+    val actualHashAlgorithm = keyBindingJwt.jwtClaimsSet.stringClaim("transaction_data_hashes_alg")
+        .getOrElse {
+            raise(convert(it.message ?: "'transaction_data_hashes_alg' claim is not a string"))
+        }
+    ensure(hashAlgorithm.ianaName == actualHashAlgorithm) {
+        convert("'transaction_data_hashes_alg' must be '${hashAlgorithm.ianaName}'")
     }
 
     val expectedHashes = transactionData.map {
         val hash = hash(it.base64Url, hashAlgorithm)
         base64UrlNoPadding.encode(hash)
     }
-    val actualHashes = keyBindingJwt.jwtClaimsSet.getStringListClaim("transaction_data_hashes")
-    require(actualHashes.isNotEmpty() && actualHashes.size <= expectedHashes.size && expectedHashes.containsAll(actualHashes)) {
-        "hashes of transaction data do not match the expected values"
+    val actualHashes = keyBindingJwt.jwtClaimsSet.stringListClaim("transaction_data_hashes")
+        .getOrElse {
+            raise(convert(it.message ?: "'transaction_data_hashes_alg' claim is not a string list"))
+        }
+    ensure(actualHashes.isNotEmpty() && actualHashes.size <= expectedHashes.size && expectedHashes.containsAll(actualHashes)) {
+        convert("hashes of transaction data do not match the expected values")
     }
 }
 
+private fun DeviceResponseError.toWalletResponseValidationError(): WalletResponseValidationError.InvalidVpToken {
+    val error = when (this) {
+        DeviceResponseError.CannotBeDecoded -> "DeviceResponse cannot be decoded"
+        is DeviceResponseError.InvalidDocuments -> {
+            val deviceResponseErrors = invalidDocuments.joinToString { invalidDocument ->
+                val documentErrors = invalidDocument.errors.joinToString()
+                "Document at index '${invalidDocument.index}' with docType '${invalidDocument.documentType}' " +
+                    "contains the following errors: '$documentErrors'"
+            }
+
+            "DeviceResponse contains invalid documents: $deviceResponseErrors"
+        }
+        is DeviceResponseError.NotOkDeviceResponseStatus -> "Unexpected DeviceResponse status: '$status'"
+    }
+
+    return WalletResponseValidationError.InvalidVpToken(error)
+}
+
 // Mappings taken from https://www.iana.org/assignments/cose/cose.xhtml#algorithms
-private fun Int.toJwsAlgorithm(): JWSAlgorithm =
-    when (this) {
+private fun Int.toJwsAlgorithm(): Either<WalletResponseValidationError, JWSAlgorithm> = either {
+    when (this@toJwsAlgorithm) {
         5 -> JWSAlgorithm.HS256
         6 -> JWSAlgorithm.HS384
         7 -> JWSAlgorithm.HS512
@@ -175,5 +232,22 @@ private fun Int.toJwsAlgorithm(): JWSAlgorithm =
         -38 -> JWSAlgorithm.PS384
         -39 -> JWSAlgorithm.PS512
         -8 -> JWSAlgorithm.EdDSA
-        else -> throw IllegalArgumentException("Unknown AlgorithmID '$this'")
+        else -> raise(WalletResponseValidationError.InvalidVpToken("Unknown AlgorithmID '${this@toJwsAlgorithm}'"))
     }
+}
+
+private fun Collection<SdJwtVcValidationError>.toJson(): JsonArray =
+    JsonArray(
+        map { error ->
+            buildJsonObject {
+                put("error", error.reason.name)
+                val (description, cause) = when (val cause = error.cause) {
+                    is SdJwtVerificationException -> cause.description to null
+                    is StatusCheckException -> cause.reason to cause.causedBy
+                    else -> "an unexpected error occurred${cause.message?.let { ": $it" } ?: ""}" to cause
+                }
+                put("description", description)
+                cause?.message?.let { put("cause", it) }
+            }
+        },
+    )

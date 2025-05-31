@@ -19,7 +19,7 @@ package eu.europa.ec.eudi.verifier.endpoint.domain
  * [OpenID for Verifiable Presentations](https://openid.net/specs/openid-4-verifiable-presentations-1_0-23.html)
  */
 object OpenId4VPSpec {
-    const val VERSION: String = "draft 23"
+    const val VERSION: String = "draft 24"
 
     const val RESPONSE_URI: String = "response_uri"
     const val PRESENTATION_DEFINITION: String = "presentation_definition"
@@ -27,8 +27,12 @@ object OpenId4VPSpec {
     const val DCQL_QUERY: String = "dcql_query"
     const val TRANSACTION_DATA: String = "transaction_data"
 
-    const val RESPONSE_URI_METHOD_GET: String = "get"
-    const val RESPONSE_URI_METHOD_POST: String = "post"
+    const val CLIENT_ID: String = "client_id"
+    const val REQUEST: String = "request"
+    const val REQUEST_URI: String = "request_uri"
+    const val REQUEST_URI_METHOD: String = "request_uri_method"
+    const val REQUEST_URI_METHOD_GET: String = "get"
+    const val REQUEST_URI_METHOD_POST: String = "post"
 
     const val DIRECT_POST: String = "direct_post"
     const val DIRECT_POST_JWT: String = "direct_post.jwt"
@@ -53,8 +57,7 @@ object OpenId4VPSpec {
     const val DCQL_VALUES: String = "values"
     const val DCQL_SD_JWT_VC_VCT_VALUES: String = "vct_values"
     const val DCQL_MSO_MDOC_DOCTYPE_VALUE: String = "doctype_value"
-    const val DCQL_MSO_MDOC_NAMESPACE: String = "namespace"
-    const val DCQL_MSO_MDOC_CLAIM_NAME: String = "claim_name"
+    const val DCQL_MSO_MDOC_INTENT_TO_RETAIN: String = "intent_to_retain"
 
     const val WALLET_METADATA: String = "wallet_metadata"
     const val WALLET_NONCE: String = "wallet_nonce"

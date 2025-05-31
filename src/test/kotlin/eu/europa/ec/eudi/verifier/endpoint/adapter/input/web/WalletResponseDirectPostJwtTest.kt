@@ -27,12 +27,12 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.nimbusJWSAlgorithm
 import eu.europa.ec.eudi.verifier.endpoint.domain.JarmOption
 import eu.europa.ec.eudi.verifier.endpoint.domain.RequestId
 import eu.europa.ec.eudi.verifier.endpoint.domain.TransactionId
+import eu.europa.ec.eudi.verifier.endpoint.port.input.InitTransactionResponse
 import eu.europa.ec.eudi.verifier.endpoint.port.input.ResponseModeTO
 import eu.europa.ec.eudi.verifier.endpoint.port.input.WalletResponseTO
 import eu.europa.ec.eudi.verifier.endpoint.port.out.presentation.ValidateVerifiablePresentation
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import org.junit.jupiter.api.MethodOrderer.OrderAnnotation
 import org.junit.jupiter.api.TestMethodOrder
@@ -99,7 +99,10 @@ internal class WalletResponseDirectPostJwtValidationsDisabledTest {
             // given
             val idToken = "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NkstUiJ9.eyJzdWIiOiJib2IiLCJpc3MiOiJtZSIsImF1ZCI6InlvdSIs"
             val initTransaction = VerifierApiClient.loadInitTransactionTO(presentationDefinition)
-            val transactionInitialized = VerifierApiClient.initTransaction(client, initTransaction)
+            val transactionInitialized =
+                assertIs<InitTransactionResponse.JwtSecuredAuthorizationRequestTO>(
+                    VerifierApiClient.initTransaction(client, initTransaction),
+                )
             val requestId =
                 RequestId(transactionInitialized.requestUri?.removePrefix("http://localhost:0/wallet/request.jwt/")!!)
             val requestObjectJsonResponse =
@@ -158,13 +161,14 @@ internal class WalletResponseDirectPostJwtValidationsDisabledTest {
         // Test with single Verifiable Presentation -- single JsonObject
         test("02-presentationDefinition.json", "02-presentationSubmission.json", "02-vpToken.json") {
             val vpToken = assertNotNull(it.vpToken)
-            assertEquals(1, vpToken.size)
+            assertIs<JsonArray>(vpToken)
             assertIs<JsonObject>(vpToken[0])
         }
 
         // Test with multiple Verifiable Presentation -- single JsonArray that contains one JsonPrimitive and one JsonObject
         test("03-presentationDefinition.json", "03-presentationSubmission.json", "03-vpToken.json") {
             val vpToken = assertNotNull(it.vpToken)
+            assertIs<JsonArray>(vpToken)
             assertEquals(2, vpToken.size)
             assertIs<JsonPrimitive>(vpToken[0])
             assertIs<JsonObject>(vpToken[1])
@@ -182,7 +186,8 @@ internal class WalletResponseDirectPostJwtValidationsDisabledTest {
         val initTransaction = VerifierApiClient.loadInitTransactionTO(
             "02-presentationDefinition.json",
         ).copy(responseMode = ResponseModeTO.DirectPostJwt)
-        val transactionInitialized = VerifierApiClient.initTransaction(client, initTransaction)
+        val transactionInitialized =
+            assertIs<InitTransactionResponse.JwtSecuredAuthorizationRequestTO>(VerifierApiClient.initTransaction(client, initTransaction))
         val requestId =
             RequestId(transactionInitialized.requestUri?.removePrefix("http://localhost:0/wallet/request.jwt/")!!)
         val requestObjectJsonResponse =
@@ -230,9 +235,10 @@ internal class WalletResponseDirectPostJwtValidationsEnabledTest {
     private lateinit var client: WebTestClient
 
     @Test
-    fun `when wallet responds with a single deviceresponse that contains multiple documents, validations succeeds`() = runTest {
+    fun `when wallet responds with a single device response that contains multiple documents, validations succeeds`() = runTest {
         val initTransaction = VerifierApiClient.loadInitTransactionTO("06-pidPlusMdl-presentationDefinition.json")
-        val transactionDetails = VerifierApiClient.initTransaction(client, initTransaction)
+        val transactionDetails =
+            assertIs<InitTransactionResponse.JwtSecuredAuthorizationRequestTO>(VerifierApiClient.initTransaction(client, initTransaction))
         val requestObject = WalletApiClient.getRequestObjectJsonResponse(client, transactionDetails.requestUri!!)
 
         val jarmOption = assertIs<JarmOption.Encrypted>(requestObject.jarmOption())
@@ -266,14 +272,15 @@ internal class WalletResponseDirectPostJwtValidationsEnabledTest {
         val transactionResponse =
             assertNotNull(VerifierApiClient.getWalletResponse(client, TransactionId(transactionDetails.transactionId)))
         val vpToken = assertNotNull(transactionResponse.vpToken)
-        assertEquals(1, vpToken.size)
-        assertIs<JsonPrimitive>(vpToken.first())
+        assertIs<JsonArray>(vpToken)
+        assertIs<JsonPrimitive>(vpToken[0])
     }
 
     @Test
     fun `when wallet posts sd-jwt-vc with invalid status list details, post fails`() = runTest {
         val initTransaction = VerifierApiClient.loadInitTransactionTO("07-ehicSdJwtVc-presentationDefinition.json")
-        val transactionDetails = VerifierApiClient.initTransaction(client, initTransaction)
+        val transactionDetails =
+            assertIs<InitTransactionResponse.JwtSecuredAuthorizationRequestTO>(VerifierApiClient.initTransaction(client, initTransaction))
         val requestObject = WalletApiClient.getRequestObjectJsonResponse(client, transactionDetails.requestUri!!)
 
         val jarmOption = assertIs<JarmOption.Encrypted>(requestObject.jarmOption())
