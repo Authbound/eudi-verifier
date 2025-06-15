@@ -22,14 +22,15 @@ import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.*
 import com.nimbusds.jose.jwk.gen.ECKeyGenerator
 import com.nimbusds.jose.util.Base64
-import eu.europa.ec.eudi.sdjwt.vc.DefaultHttpClientFactory
 import eu.europa.ec.eudi.sdjwt.vc.KtorHttpClientFactory
 import eu.europa.ec.eudi.verifier.endpoint.EmbedOptionEnum.ByReference
 import eu.europa.ec.eudi.verifier.endpoint.EmbedOptionEnum.ByValue
+import eu.europa.ec.eudi.verifier.endpoint.adapter.input.timer.RefreshTrustSources
 import eu.europa.ec.eudi.verifier.endpoint.adapter.input.timer.ScheduleDeleteOldPresentations
 import eu.europa.ec.eudi.verifier.endpoint.adapter.input.timer.ScheduleTimeoutPresentations
 import eu.europa.ec.eudi.verifier.endpoint.adapter.input.web.*
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CShouldBe
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.ProvideTrustSource
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.TrustSources
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cfg.GenerateRequestIdNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cfg.GenerateTransactionIdNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.CreateJarNimbus
@@ -37,6 +38,7 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.GenerateEphemeralEnc
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.ParseJarmOptionNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.VerifyJarmEncryptedJwtNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.json.jsonSupport
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.lotl.FetchLOTLCertificatesDSS
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DeviceResponseValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DocumentValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.IssuerSignedItemsShouldBe
@@ -52,8 +54,12 @@ import eu.europa.ec.eudi.verifier.endpoint.port.input.*
 import eu.europa.ec.eudi.verifier.endpoint.port.out.cfg.CreateQueryWalletResponseRedirectUri
 import eu.europa.ec.eudi.verifier.endpoint.port.out.cfg.GenerateResponseCode
 import io.ktor.client.*
+import io.ktor.client.engine.*
 import io.ktor.client.engine.apache.*
 import io.ktor.client.plugins.contentnegotiation.*
+import io.ktor.client.plugins.defaultRequest
+import io.ktor.client.request.header
+import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
@@ -74,6 +80,7 @@ import org.springframework.security.config.web.server.ServerHttpSecurity
 import org.springframework.security.config.web.server.invoke
 import org.springframework.web.cors.CorsConfiguration
 import org.springframework.web.cors.reactive.CorsConfigurationSource
+import java.net.URI
 import java.security.KeyStore
 import java.security.cert.X509Certificate
 import java.time.Clock
@@ -85,27 +92,6 @@ private val log = LoggerFactory.getLogger(VerifierApplication::class.java)
 @OptIn(ExperimentalSerializationApi::class)
 internal fun beans(clock: Clock) = beans {
     bean { clock }
-
-    val trustedIssuers: KeyStore? by lazy {
-        env.getProperty("trustedIssuers.keystore.path")
-            ?.takeIf { it.isNotBlank() }
-            ?.let { keystorePath ->
-                val keystoreType = env.getRequiredProperty("trustedIssuers.keystore.type")
-                val keystorePassword = env.getProperty("trustedIssuers.keystore.password")
-                    ?.takeIf { it.isNotBlank() }
-                    ?.toCharArray()
-
-                log.info("Loading trusted issuers' certificates from '$keystorePath'")
-                DefaultResourceLoader().getResource(keystorePath)
-                    .inputStream
-                    .use {
-                        KeyStore.getInstance(keystoreType)
-                            .apply {
-                                load(it, keystorePassword)
-                            }
-                    }
-            }
-    }
 
     //
     // JOSE
@@ -133,17 +119,27 @@ internal fun beans(clock: Clock) = beans {
     //
     // Ktor
     //
+
+    val proxy = env.getProperty("verifier.http.proxy.url")?.let {
+        val url = Url(it)
+        val username = env.getProperty("verifier.http.proxy.username")
+        val password = env.getProperty("verifier.http.proxy.password")
+        HttpProxy(url, username, password)
+    }
+
     profile("self-signed") {
-        log.warn("Using Ktor HttpClients that trust self-signed certificates and perform no hostname verification")
+        log.warn("Using Ktor HttpClients that trust self-signed certificates and perform no hostname verification with proxy")
         bean<KtorHttpClientFactory> {
             {
-                createHttpClient(trustSelfSigned = true)
+                createHttpClient(trustSelfSigned = true, httpProxy = proxy)
             }
         }
     }
     profile("!self-signed") {
         bean<KtorHttpClientFactory> {
-            DefaultHttpClientFactory
+            {
+                createHttpClient(httpProxy = proxy)
+            }
         }
     }
 
@@ -202,43 +198,42 @@ internal fun beans(clock: Clock) = beans {
         bean<StatusListTokenValidator> {
             val selfSignedProfileActive = env.activeProfiles.contains("self-signed")
             val httpClientFactory = if (selfSignedProfileActive) {
-                { createHttpClient(withJsonContentNegotiation = false, trustSelfSigned = true) }
+                { createHttpClient(withJsonContentNegotiation = false, trustSelfSigned = true, httpProxy = proxy) }
             } else {
-                { createHttpClient(withJsonContentNegotiation = false, trustSelfSigned = false) }
+                { createHttpClient(withJsonContentNegotiation = false, trustSelfSigned = false, httpProxy = proxy) }
             }
             StatusListTokenValidator(httpClientFactory, clock, ref())
         }
     }
 
     // Default DeviceResponseValidator
+    bean { TrustSources(revocationEnabled = false) }
     bean<DeviceResponseValidator> {
-        val x5cShouldBe = trustedIssuers?.let { X5CShouldBe.fromKeystore(it) } ?: X5CShouldBe.Ignored
-        deviceResponseValidator(x5cShouldBe)
+        val trustSources = ref<TrustSources>()
+        deviceResponseValidator(trustSources::invoke)
     }
 
     // Default SdJwtVcValidator
     bean<SdJwtVcValidator> {
-        val x5CShouldBe = trustedIssuers?.let {
-            X5CShouldBe.fromKeystore(it) {
-                isRevocationEnabled = false
-            }
-        } ?: X5CShouldBe.Ignored
-        sdJwtVcValidator(x5CShouldBe)
+        val trustSources = ref<TrustSources>()
+        sdJwtVcValidator(trustSources::invoke)
     }
 
     bean {
         ValidateMsoMdocDeviceResponse(
             ref(),
             ref(),
-            deviceResponseValidatorFactory = { trustedIssuers ->
-                trustedIssuers?.let { deviceResponseValidator(it) } ?: ref()
+            deviceResponseValidatorFactory = { userProvided ->
+                val appDefault = ref<DeviceResponseValidator>()
+                userProvided?.let { deviceResponseValidator { userProvided } } ?: appDefault
             },
         )
     }
     bean {
         ValidateSdJwtVc(
-            sdJwtVcValidatorFactory = { trustedIssuers ->
-                trustedIssuers?.let { sdJwtVcValidator(it) } ?: ref()
+            sdJwtVcValidatorFactory = { userProvided ->
+                val appDefault = ref<SdJwtVcValidator>()
+                userProvided?.let { sdJwtVcValidator { userProvided } } ?: appDefault
             },
             ref(),
         )
@@ -247,20 +242,25 @@ internal fun beans(clock: Clock) = beans {
     bean {
         ValidateSdJwtVcOrMsoMdocVerifiablePresentation(
             config = ref(),
-            sdJwtVcValidatorFactory = { trustedIssuers ->
-                trustedIssuers?.let { sdJwtVcValidator(it) } ?: ref()
+            sdJwtVcValidatorFactory = { userProvided ->
+                val appDefault = ref<SdJwtVcValidator>()
+                userProvided?.let { sdJwtVcValidator { userProvided } } ?: appDefault
             },
-            deviceResponseValidatorFactory = { trustedIssuers ->
-                trustedIssuers?.let { deviceResponseValidator(it) } ?: ref()
+            deviceResponseValidatorFactory = { userProvided ->
+                val appDefault = ref<DeviceResponseValidator>()
+                userProvided?.let { deviceResponseValidator { userProvided } } ?: appDefault
             },
         )
     }
+
+    bean { FetchLOTLCertificatesDSS() }
 
     //
     // Scheduled
     //
     bean(::ScheduleTimeoutPresentations)
     bean(::ScheduleDeleteOldPresentations)
+    bean { RefreshTrustSources(ref(), ref(), ref()) }
 
     //
     // Config
@@ -340,25 +340,28 @@ internal fun beans(clock: Clock) = beans {
     }
 }
 
-private fun BeanSupplierContext.deviceResponseValidator(trustedIssuers: X5CShouldBe): DeviceResponseValidator {
+private fun BeanSupplierContext.deviceResponseValidator(
+    provideTrustSource: ProvideTrustSource,
+): DeviceResponseValidator {
     val docValidator = DocumentValidator(
         clock = ref(),
         issuerSignedItemsShouldBe = IssuerSignedItemsShouldBe.Verified,
         validityInfoShouldBe = ValidityInfoShouldBe.NotExpired,
-        x5CShouldBe = trustedIssuers,
+        provideTrustSource = provideTrustSource,
     )
     log.info(
         "Created DocumentValidator using: \n\t" +
             "IssuerSignedItemsShouldBe: '${IssuerSignedItemsShouldBe.Verified}', \n\t" +
-            "ValidityInfoShouldBe: '${ValidityInfoShouldBe.NotExpired}', and \n\t" +
-            "X5CShouldBe '$trustedIssuers'",
+            "ValidityInfoShouldBe: '${ValidityInfoShouldBe.NotExpired}'",
     )
     return DeviceResponseValidator(docValidator)
 }
 
-private fun BeanSupplierContext.sdJwtVcValidator(trustedIssuers: X5CShouldBe): SdJwtVcValidator =
+private fun BeanSupplierContext.sdJwtVcValidator(
+    provideTrustSource: ProvideTrustSource,
+): SdJwtVcValidator =
     SdJwtVcValidator(
-        trustedIssuers = trustedIssuers,
+        provideTrustSource = provideTrustSource,
         audience = ref<VerifierConfig>().verifierId,
         provider<StatusListTokenValidator>().ifAvailable,
     )
@@ -502,7 +505,92 @@ private fun verifierConfig(environment: Environment, clock: Clock): VerifierConf
         clientMetaData = environment.clientMetaData(),
         transactionDataHashAlgorithm = transactionDataHashAlgorithm,
         authorizationRequestScheme = authorizationRequestScheme,
+        trustSourcesConfig = environment.trustSources(),
     )
+}
+
+/**
+ * Parses the trust sources configuration from the environment.
+ * Handles array-like property names: verifier.trustSources[0].pattern, etc.
+ */
+private fun Environment.trustSources(): Map<Regex, TrustSourceConfig>? {
+    val trustSourcesConfigMap = mutableMapOf<Regex, TrustSourceConfig>()
+    val prefix = "verifier.trustSources"
+
+    var index = 0
+    while (true) {
+        val indexPrefix = "$prefix[$index]"
+        val patternStr = getPropertyOrEnvVariable("$indexPrefix.pattern") ?: break
+        val pattern = patternStr.toRegex()
+
+        // Parse LOTL configuration if present
+        val lotlSourceConfig = getPropertyOrEnvVariable("$indexPrefix.lotl.location")?.takeIf { it.isNotBlank() }?.let { lotlLocation ->
+            val location = URI(lotlLocation).toURL()
+            val serviceTypeFilter = getPropertyOrEnvVariable<ProviderKind>("$indexPrefix.lotl.serviceTypeFilter")
+            val refreshInterval = getPropertyOrEnvVariable("$indexPrefix.lotl.refreshInterval", "0 0 * * * *")
+
+            val lotlKeystoreConfig = parseKeyStoreConfig("$indexPrefix.lotl.keystore")
+
+            TrustedListConfig(location, serviceTypeFilter, refreshInterval, lotlKeystoreConfig)
+        }
+
+        // Parse keystore configuration if present
+        val keystoreConfig = parseKeyStoreConfig("$indexPrefix.keystore")
+
+        trustSourcesConfigMap[pattern] = TrustSourcesConfig(lotlSourceConfig, keystoreConfig)
+
+        index++
+    }
+
+    return trustSourcesConfigMap.ifEmpty {
+        fallbackTrustSources()
+    }
+}
+
+private fun Environment.getPropertyOrEnvVariable(property: String): String? {
+    return getProperty(property) ?: getProperty(toEnvironmentVariable(property))
+}
+
+private fun Environment.getPropertyOrEnvVariable(property: String, defaultValue: String): String {
+    return getProperty(property) ?: getProperty(toEnvironmentVariable(property)) ?: defaultValue
+}
+
+private inline fun <reified T> Environment.getPropertyOrEnvVariable(property: String): T? {
+    return getProperty(property, T::class.java) ?: getProperty(toEnvironmentVariable(property), T::class.java)
+}
+
+private fun toEnvironmentVariable(property: String): String {
+    return property.replace(".", "_")
+        .replace("[", "_")
+        .replace("]", "")
+        .replace("-", "")
+        .uppercase()
+}
+
+private fun Environment.fallbackTrustSources(): Map<Regex, TrustSourceConfig>? =
+    parseKeyStoreConfig("trustedIssuers.keystore")?.let {
+        mapOf(".*".toRegex() to TrustSourcesConfig(null, it))
+    }
+
+private fun Environment.parseKeyStoreConfig(propertyPrefix: String) = getPropertyOrEnvVariable(
+    "$propertyPrefix.path",
+)?.let { keystorePath ->
+    val keystoreType = getPropertyOrEnvVariable("$propertyPrefix.type") ?: "JKS"
+    val keystorePassword = getPropertyOrEnvVariable("$propertyPrefix.password", "").toCharArray()
+    loadKeystore(keystorePath, keystoreType, keystorePassword)
+        .onFailure { log.warn("Failed to load keystore from '$keystorePath'", it) }
+        .map { KeyStoreConfig(keystorePath, keystoreType, keystorePassword, it) }
+        .getOrNull()
+}
+
+private fun loadKeystore(keystorePath: String, keystoreType: String, keystorePassword: CharArray) = runCatching {
+    DefaultResourceLoader().getResource(keystorePath)
+        .inputStream
+        .use {
+            KeyStore.getInstance(keystoreType).apply {
+                load(it, keystorePassword)
+            }
+        }
 }
 
 private fun Environment.clientMetaData(): ClientMetaData {
@@ -605,8 +693,13 @@ private fun Environment.getOptionalList(
  *
  * @param withJsonContentNegotiation if true, installs ContentNegotiation with JSON support
  * @param trustSelfSigned if true, configures the client to trust self-signed certificates and perform no hostname verification
+ * @param httpProxy If not null, configures the client to use the provided proxy. If authentication provided, append it to the header
  */
-private fun createHttpClient(withJsonContentNegotiation: Boolean = true, trustSelfSigned: Boolean = false): HttpClient =
+private fun createHttpClient(
+    withJsonContentNegotiation: Boolean = true,
+    trustSelfSigned: Boolean = false,
+    httpProxy: HttpProxy? = null,
+): HttpClient =
     HttpClient(Apache) {
         if (withJsonContentNegotiation) {
             install(ContentNegotiation) {
@@ -615,6 +708,9 @@ private fun createHttpClient(withJsonContentNegotiation: Boolean = true, trustSe
         }
         expectSuccess = true
         engine {
+            if (httpProxy != null) {
+                proxy = ProxyBuilder.http(httpProxy.url)
+            }
             followRedirects = true
             if (trustSelfSigned) {
                 customizeClient {
@@ -627,4 +723,22 @@ private fun createHttpClient(withJsonContentNegotiation: Boolean = true, trustSe
                 }
             }
         }
+        if (httpProxy?.username != null) {
+            defaultRequest {
+                val password = httpProxy.password ?: ""
+                val credentials = Base64.encode("${httpProxy.username}:$password")
+                header(HttpHeaders.ProxyAuthorization, "Basic $credentials")
+            }
+        }
     }
+data class HttpProxy(
+    val url: Url,
+    val username: String? = null,
+    val password: String? = null,
+) {
+    init {
+        require(password == null || username != null) {
+            "Password cannot be set if username is null"
+        }
+    }
+}
