@@ -27,6 +27,7 @@ import com.eygraber.uri.toURI
 import com.nimbusds.jose.JWSAlgorithm
 import eu.europa.ec.eudi.prex.PresentationDefinition
 import eu.europa.ec.eudi.sdjwt.SdJwtVcSpec
+import eu.europa.ec.eudi.verifier.endpoint.adapter.input.web.VerifierApi
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.json.decodeAs
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.metadata.MsoMdocFormatTO
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.metadata.SdJwtVcFormatTO
@@ -53,6 +54,8 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 import java.net.URI
 import java.net.URL
 import java.security.cert.X509Certificate
@@ -239,6 +242,8 @@ class InitTransactionLive(
     private val generateQrCode: GenerateQrCode,
 ) : InitTransaction {
 
+    private val logger: Logger = LoggerFactory.getLogger(InitTransaction::class.java)
+
     override suspend fun invoke(
         initTransactionTO: InitTransactionTO,
     ): Either<ValidationError, InitTransactionResponse> = either {
@@ -254,7 +259,7 @@ class InitTransactionLive(
 
         val getWalletResponseMethod = getWalletResponseMethod(initTransactionTO).bind()
         val issuerChain = issuerChain(initTransactionTO).bind()
-
+        logger.info("Issuer chain: ${issuerChain}")
         // Initialize presentation
         val requestedPresentation = Presentation.Requested(
             id = generateTransactionId(),

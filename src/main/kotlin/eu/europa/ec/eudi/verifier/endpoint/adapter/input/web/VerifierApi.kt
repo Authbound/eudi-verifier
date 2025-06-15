@@ -56,7 +56,7 @@ internal class VerifierApi(
             else -> Output.Json
         }
         val input = req.awaitBody<InitTransactionTO>().copy(output = output)
-
+        logger.info("INPUT= $input")
         logger.info("Handling InitTransaction nonce=${input.nonce} ... ")
         initTransaction(input).fold(
             ifRight = {
