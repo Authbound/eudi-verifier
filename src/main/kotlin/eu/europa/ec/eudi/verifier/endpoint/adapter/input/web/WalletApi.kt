@@ -77,6 +77,7 @@ class WalletApi(
                 HttpMethod.GET -> RetrieveRequestObjectMethod.Get
                 HttpMethod.POST -> {
                     val form = awaitFormData()
+                    logger.info("Form INPUT: $form")
                     RetrieveRequestObjectMethod.Post(
                         walletMetadata = form.getFirst(OpenId4VPSpec.WALLET_METADATA),
                         walletNonce = form.getFirst(OpenId4VPSpec.WALLET_NONCE),
@@ -133,7 +134,7 @@ class WalletApi(
         logger.info("Wallet response: $walletResponse")
         postWalletResponse(requestId, walletResponse).fold(
             ifRight = { response ->
-                logger.info("PostWalletResponse processed")
+                logger.info("PostWalletResponse processed $response")
                 if (response == null) {
                     logger.info("Verifier UI will poll for Wallet Response")
                     ok().json().bodyValueAndAwait(JsonObject(emptyMap()))

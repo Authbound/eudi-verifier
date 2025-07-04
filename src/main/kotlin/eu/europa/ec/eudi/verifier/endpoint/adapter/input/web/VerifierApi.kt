@@ -87,7 +87,7 @@ internal class VerifierApi(
 
         val transactionId = req.transactionId()
         val responseCode = req.queryParam("response_code").getOrNull()?.let { ResponseCode(it) }
-
+        logger.info("RESPONSE CODE $responseCode")
         logger.info("Handling GetWalletResponse for tx ${transactionId.value} and response_code: ${responseCode?.value ?: "n/a"}. ...")
         return when (val result = getWalletResponse(transactionId, responseCode)) {
             is QueryResponse.NotFound -> notFound().buildAndAwait()

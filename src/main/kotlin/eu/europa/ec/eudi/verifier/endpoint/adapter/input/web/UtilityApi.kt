@@ -46,6 +46,7 @@ internal class UtilityApi(
      * Handles a request to validate an MsoMdoc DeviceResponse.
      */
     private suspend fun handleValidateMsoMdocDeviceResponse(request: ServerRequest): ServerResponse {
+        println("handleValidateMsoMdocDeviceResponse called with request: ${request.awaitFormData()}")
         val form = request.awaitFormData()
         val vpToken = form["device_response"]
             ?.firstOrNull { it.isNotBlank() }

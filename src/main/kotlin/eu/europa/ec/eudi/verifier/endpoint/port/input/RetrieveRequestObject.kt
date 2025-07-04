@@ -45,6 +45,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonObject
+import org.slf4j.LoggerFactory
 import java.time.Clock
 import kotlin.reflect.KClass
 
@@ -92,6 +93,8 @@ class RetrieveRequestObjectLive(
     private val clientFactory: KtorHttpClientFactory,
 ) : RetrieveRequestObject {
 
+    private val logger = LoggerFactory.getLogger(javaClass)
+
     private val walletMetadataValidator = WalletMetadataValidator(verifierConfig, clientFactory)
 
     override suspend operator fun invoke(
@@ -113,6 +116,9 @@ class RetrieveRequestObjectLive(
             ensure(presentation is Presentation.Requested) {
                 RetrieveRequestObjectError.InvalidState(Presentation.Requested::class, presentation::class)
             }
+
+
+            logger.info("Retrieving Request Object for presentation with id '${presentation.id}' and method '$method' using wallet nonce '${method.walletNonceOrNull}' and wallet metadata '${method.walletMetadataOrNull}'")
 
             suspend fun updatePresentationAndCreateJar(
                 encryptionRequirement: EncryptionRequirement,
@@ -136,6 +142,7 @@ class RetrieveRequestObjectLive(
             val encryptionRequirement = walletMetadata?.validate(presentation)?.bind() ?: EncryptionRequirement.NotRequired
 
             val (updatePresentation, jar) = updatePresentationAndCreateJar(encryptionRequirement)
+            logger.info("updated presentation ${updatePresentation.toString()}, jar $jar")
             log(updatePresentation, jar)
             jar
         }.onLeft { error ->
