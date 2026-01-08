@@ -15,22 +15,25 @@
  */
 package eu.europa.ec.eudi.verifier.endpoint.port.input
 
+import arrow.core.Either
 import arrow.core.NonEmptyList
+import arrow.core.getOrElse
+import arrow.core.raise.either
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DeviceResponseError
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DeviceResponseValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DocumentError
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.InvalidDocument
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.utils.getOrThrow
+import eu.europa.ec.eudi.verifier.endpoint.domain.Clock
 import eu.europa.ec.eudi.verifier.endpoint.port.out.x509.ParsePemEncodedX509CertificateChain
 import eu.europa.ec.eudi.verifier.endpoint.port.out.x509.x5cShouldBeTrustedOrNull
 import id.walt.mdoc.dataelement.*
 import id.walt.mdoc.doc.MDoc
 import kotlinx.datetime.atStartOfDayIn
-import kotlinx.datetime.toKotlinTimeZone
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
 import org.slf4j.LoggerFactory
-import java.time.Clock
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -90,6 +93,7 @@ internal enum class DocumentErrorTO {
     DocumentTypeNotMatching,
     InvalidIssuerSignedItems,
     NoMatchingX5CValidator,
+    DocumentHasBeenRevoked,
 }
 
 /**
@@ -127,32 +131,26 @@ internal class ValidateMsoMdocDeviceResponse(
     private val parsePemEncodedX509CertificateChain: ParsePemEncodedX509CertificateChain,
     private val deviceResponseValidatorFactory: (X5CShouldBe?) -> DeviceResponseValidator,
 ) {
-    suspend operator fun invoke(deviceResponse: String, issuerChain: String?): DeviceResponseValidationResult {
-        val validator = deviceResponseValidator(issuerChain)
-            .getOrElse {
-                return DeviceResponseValidationResult.Invalid(ValidationErrorTO.invalidIssuerChain())
-            }
+    suspend operator fun invoke(deviceResponse: String, issuerChain: String?): DeviceResponseValidationResult =
+        either {
+            val validator = deviceResponseValidator(issuerChain)
+                .getOrElse {
+                    raise(ValidationErrorTO.invalidIssuerChain())
+                }
 
-        return validator.ensureValid(deviceResponse)
-            .fold(
-                ifRight = { documents ->
-                    DeviceResponseValidationResult.Valid(
-                        JsonArray(
-                            documents.map {
-                                Json.encodeToJsonElement(
-                                    it.toDocumentTO(
-                                        clock,
-                                    ),
-                                )
-                            },
-                        ),
-                    )
-                },
-                ifLeft = { DeviceResponseValidationResult.Invalid(it.toValidationFailureTO()) },
-            )
-    }
+            val documents = validator.ensureValid(deviceResponse, null)
+                .mapLeft { it.toValidationFailureTO() }
+                .bind()
+                .map { Json.encodeToJsonElement(it.toDocumentTO(clock)) }
+                .let { JsonArray(it) }
 
-    private fun deviceResponseValidator(issuerChainInPem: String?): Result<DeviceResponseValidator> = runCatching {
+            documents
+        }.fold(
+            ifLeft = { DeviceResponseValidationResult.Invalid(it) },
+            ifRight = { DeviceResponseValidationResult.Valid(it) },
+        )
+
+    private fun deviceResponseValidator(issuerChainInPem: String?): Either<Throwable, DeviceResponseValidator> = Either.catch {
         val x5cShouldBe = issuerChainInPem
             ?.let { parsePemEncodedX509CertificateChain.x5cShouldBeTrustedOrNull(it).getOrThrow() }
         deviceResponseValidatorFactory(x5cShouldBe)
@@ -179,6 +177,7 @@ private fun DocumentError.toDocumentErrorTO(): DocumentErrorTO =
         DocumentError.DocumentTypeNotMatching -> DocumentErrorTO.DocumentTypeNotMatching
         DocumentError.InvalidIssuerSignedItems -> DocumentErrorTO.InvalidIssuerSignedItems
         DocumentError.NoMatchingX5CShouldBe -> DocumentErrorTO.NoMatchingX5CValidator
+        DocumentError.DocumentHasBeenRevoked -> DocumentErrorTO.DocumentHasBeenRevoked
     }
 
 private fun MDoc.toDocumentTO(clock: Clock): DocumentTO = DocumentTO(
@@ -195,40 +194,27 @@ private fun MDoc.toDocumentTO(clock: Clock): DocumentTO = DocumentTO(
 @OptIn(ExperimentalEncodingApi::class)
 private val base64 = Base64.UrlSafe.withPadding(Base64.PaddingOption.ABSENT_OPTIONAL)
 
+private fun Boolean.toJsonPrimitive() = JsonPrimitive(this)
+private fun Number.toJsonPrimitive() = JsonPrimitive(this)
+private fun String.toJsonPrimitive() = JsonPrimitive(this)
+private fun List<JsonElement>.toJsonArray() = JsonArray(this)
+private fun Map<String, JsonElement>.toJsonObject() = JsonObject(this)
+
 @OptIn(ExperimentalEncodingApi::class)
 private fun DataElement.toJsonElement(clock: Clock): JsonElement =
     when (this) {
-        is BooleanElement -> JsonPrimitive(value)
-        is ByteStringElement -> JsonPrimitive(base64.encode(value))
-        is DateTimeElement -> {
-            val epoch = value.toEpochMilliseconds()
-            JsonPrimitive(epoch)
-        }
-
-        is EncodedCBORElement -> JsonPrimitive(base64.encode(value))
-        is FullDateElement -> {
-            val epoch = value.atStartOfDayIn(clock.zone.toKotlinTimeZone()).toEpochMilliseconds()
-            JsonPrimitive(epoch)
-        }
-
-        is ListElement -> {
-            val values = value.map { it.toJsonElement(clock) }
-            JsonArray(values)
-        }
-
-        is MapElement -> {
-            val values = value.mapKeys { (key, _) -> key.str }.mapValues { (_, value) -> value.toJsonElement(clock) }
-            JsonObject(values)
-        }
-
+        is BooleanElement -> value.toJsonPrimitive()
+        is ByteStringElement -> base64.encode(value).toJsonPrimitive()
+        is DateTimeElement -> value.toEpochMilliseconds().toJsonPrimitive()
+        is EncodedCBORElement -> base64.encode(value).toJsonPrimitive()
+        is FullDateElement -> value.atStartOfDayIn(clock.timeZone()).toEpochMilliseconds().toJsonPrimitive()
+        is ListElement -> value.map { it.toJsonElement(clock) }.toJsonArray()
+        is MapElement -> value.mapKeys { (key, _) -> key.str }.mapValues { (_, value) -> value.toJsonElement(clock) }.toJsonObject()
         is NullElement -> JsonNull
-        is NumberElement -> JsonPrimitive(value)
-        is StringElement -> JsonPrimitive(value)
-        is TDateElement -> {
-            val epoch = value.toEpochMilliseconds()
-            JsonPrimitive(epoch)
-        }
+        is NumberElement -> value.toJsonPrimitive()
+        is StringElement -> value.toJsonPrimitive()
+        is TDateElement -> value.toEpochMilliseconds().toJsonPrimitive()
 
         // Other unsupported DataElements
-        else -> JsonPrimitive(this::class.java.simpleName)
+        else -> this::class.java.simpleName.toJsonPrimitive()
     }

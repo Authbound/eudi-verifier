@@ -36,19 +36,19 @@ dependencies {
     implementation("io.projectreactor.kotlin:reactor-kotlin-extensions")
     implementation("org.jetbrains.kotlin:kotlin-reflect")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
-    implementation(libs.presentation.exchange)
     implementation(libs.nimbusds.oauth2.oidc.sdk)
     implementation("org.springframework.boot:spring-boot-starter-security")
     implementation(libs.bouncy.castle)
     implementation(libs.arrow.core)
     implementation(libs.arrow.fx.coroutines)
+    implementation(libs.arrow.core.serialization)
     implementation("org.springframework.boot:spring-boot-starter-thymeleaf")
     implementation("org.webjars:webjars-locator-core")
     implementation(libs.swagger.ui)
     implementation(libs.waltid.mdoc.credentials) {
         because("To verify CBOR credentials")
     }
-    implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.6.2") {
+    implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.7.1-0.6.x-compat") {
         because("required by walt.id")
     }
     implementation("com.augustcellars.cose:cose-java:1.1.0") {
@@ -57,6 +57,12 @@ dependencies {
     implementation(libs.sd.jwt)
     implementation(libs.ktor.client.apache) {
         because("ktor client engine to use (required by SdJwtVcVerifier)")
+    }
+    implementation(libs.ktor.client.content.negotiation) {
+        because("ktor client content negotiation (required by http client for SD-JWT)")
+    }
+    implementation(libs.ktor.client.serialization) {
+        because("ktor client serialization (required by http client for SD-JWT)")
     }
     implementation(libs.jsonpathkt) {
         because("Evaluate JsonPaths on vp_token")
@@ -73,6 +79,11 @@ dependencies {
     implementation(libs.dss.validation)
     implementation(libs.dss.tsl.validation)
     implementation(libs.dss.utils.apache.commons)
+    implementation(libs.json.schema.validator)
+    implementation(libs.joni) {
+        because("required by json-schema-validator")
+    }
+    implementation(libs.aedile)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)
@@ -91,12 +102,13 @@ kotlin {
     }
 
     compilerOptions {
-        apiVersion = KotlinVersion.KOTLIN_2_0
+        apiVersion = KotlinVersion.KOTLIN_2_1
         freeCompilerArgs.add("-Xjsr305=strict")
         optIn.addAll(
             "kotlinx.serialization.ExperimentalSerializationApi",
             "kotlin.io.encoding.ExperimentalEncodingApi",
             "kotlin.contracts.ExperimentalContracts",
+            "kotlin.time.ExperimentalTime",
         )
     }
 }

@@ -26,7 +26,7 @@ import kotlinx.serialization.Required
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
-import java.time.Instant
+import kotlin.time.Instant
 
 @Serializable
 data class PresentationEventsTO(
@@ -69,7 +69,7 @@ private operator fun PresentationEventsTO.Companion.invoke(
 ) =
     PresentationEventsTO(
         transactionId = transactionId.value,
-        lastUpdated = lastUpdated.toEpochMilli(),
+        lastUpdated = lastUpdated.toEpochMilliseconds(),
         events = events.map { event ->
             require(event.transactionId == transactionId)
             toTransferObject(event)
@@ -77,11 +77,12 @@ private operator fun PresentationEventsTO.Companion.invoke(
     )
 
 private fun toTransferObject(event: PresentationEvent) = buildJsonObject {
-    put("timestamp", event.timestamp.toEpochMilli())
+    put("timestamp", event.timestamp.toEpochMilliseconds())
     putEventNameAndActor(event)
     when (event) {
         is PresentationEvent.TransactionInitialized -> {
             put("response", event.response.json())
+            put("profile", event.profile.json())
         }
 
         is PresentationEvent.RequestObjectRetrieved -> {
@@ -90,18 +91,6 @@ private fun toTransferObject(event: PresentationEvent) = buildJsonObject {
 
         is PresentationEvent.FailedToRetrieveRequestObject -> {
             put("cause", event.cause)
-        }
-
-        is PresentationEvent.JarmJwkSetRetrieved -> {
-            put("jwk_set", event.jwkSet)
-        }
-
-        is PresentationEvent.FailedToRetrieveJarmJwkSet -> {
-            put("cause", event.cause)
-        }
-
-        is PresentationEvent.PresentationDefinitionRetrieved -> {
-            put("presentation_definition", event.presentationDefinition.json())
         }
 
         is PresentationEvent.FailedToRetrievePresentationDefinition -> {
@@ -124,6 +113,7 @@ private fun toTransferObject(event: PresentationEvent) = buildJsonObject {
         }
 
         is PresentationEvent.PresentationExpired -> {
+            // No extra information to add
         }
 
         is PresentationEvent.AttestationStatusCheckSuccessful -> {
@@ -149,9 +139,6 @@ private fun JsonObjectBuilder.putEventNameAndActor(e: PresentationEvent) {
         is PresentationEvent.TransactionInitialized -> "Transaction initialized" to Actor.Verifier
         is PresentationEvent.RequestObjectRetrieved -> "Request object retrieved" to Actor.Wallet
         is PresentationEvent.FailedToRetrieveRequestObject -> "FailedToRetrieve request" to Actor.Wallet
-        is PresentationEvent.JarmJwkSetRetrieved -> "JARM JWK set retrieved" to Actor.Wallet
-        is PresentationEvent.FailedToRetrieveJarmJwkSet -> "FailedToRetrieve JARM JWK set retrieved" to Actor.Wallet
-        is PresentationEvent.PresentationDefinitionRetrieved -> "Presentation definition retrieved" to Actor.Wallet
         is PresentationEvent.FailedToRetrievePresentationDefinition -> "Failed to retrieve presentation definition" to Actor.Wallet
         is PresentationEvent.WalletResponsePosted -> "Wallet response posted" to Actor.Wallet
         is PresentationEvent.WalletFailedToPostResponse -> "Wallet failed to post response" to Actor.Wallet
@@ -168,11 +155,7 @@ private fun JsonObjectBuilder.putEventNameAndActor(e: PresentationEvent) {
 private fun WalletResponseValidationError.asText(): String =
     when (this) {
         WalletResponseValidationError.IncorrectState -> "Incorrect state"
-        WalletResponseValidationError.MissingIdToken -> "Missing id_token"
-        WalletResponseValidationError.MissingState -> "Missing state from JARM"
         WalletResponseValidationError.MissingVpToken -> "Missing vp_token"
-        WalletResponseValidationError.MissingPresentationSubmission -> "Missing presentation_submission"
-        WalletResponseValidationError.PresentationSubmissionMustNotBePresent -> "presentation_submission must not be provided"
         is WalletResponseValidationError.InvalidVpToken -> "vp_token is not valid: ${message}${cause?.message?.let { ", $it"}}"
         is WalletResponseValidationError.PresentationNotFound -> "Presentation not found"
         is WalletResponseValidationError.PresentationNotInExpectedState -> "Presentation non in expected state"
@@ -180,7 +163,18 @@ private fun WalletResponseValidationError.asText(): String =
         WalletResponseValidationError.RequiredCredentialSetNotSatisfied ->
             "vp_token does not satisfy all the required credential sets of the query"
         WalletResponseValidationError.InvalidPresentationSubmission -> "Presentation submission is not valid"
-        is WalletResponseValidationError.InvalidJarm -> "JARM is not valid: '${error.message}'"
+        is WalletResponseValidationError.InvalidEncryptedResponse -> "Encrypted response is not valid: '${error.message}'"
+        WalletResponseValidationError.HAIPValidationError.DeviceResponseContainsMoreThanOneMDoc -> {
+            "DeviceResponse contains more than one MDocs"
+        }
+
+        is WalletResponseValidationError.HAIPValidationError.UnsupportedMsoRevocationMechanism -> {
+            "MSO uses unsupported revocation mechanisms. Used: '${used.joinToString()}', allowed: '${allowed.joinToString()}'"
+        }
+
+        WalletResponseValidationError.HAIPValidationError.SdJwtVcMustUseTokenStatusList -> {
+            "SD-JWT VC must use Token Status List as revocation mechanism"
+        }
     }
 
 private inline fun <reified A> A.json() = Json.encodeToJsonElement(this)

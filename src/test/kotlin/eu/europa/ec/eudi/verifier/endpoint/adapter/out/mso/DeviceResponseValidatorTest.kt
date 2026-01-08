@@ -19,16 +19,15 @@ import arrow.core.NonEmptyList
 import arrow.core.toNonEmptyListOrNull
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.ProvideTrustSource
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CShouldBe
+import eu.europa.ec.eudi.verifier.endpoint.domain.Clock
+import eu.europa.ec.eudi.verifier.endpoint.domain.toJavaDate
 import kotlinx.coroutines.test.runTest
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.toInstant
 import org.springframework.core.io.DefaultResourceLoader
 import java.io.InputStream
 import java.security.KeyStore
 import java.security.cert.X509Certificate
-import java.time.Clock
-import java.time.LocalDate
-import java.time.LocalTime
-import java.time.ZonedDateTime
-import java.util.*
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -72,19 +71,18 @@ object Data {
 class DeviceResponseValidatorTest {
 
     private val clock = run {
-        val instant = ZonedDateTime.of(
-            LocalDate.of(2024, 11, 1),
-            LocalTime.MIDNIGHT,
-            TimeZone.getTimeZone("Europe/Athens").toZoneId(),
+        val testDate = LocalDateTime(2024, 11, 1, 0, 0)
+        Clock.fixed(
+            testDate.toInstant(kotlinx.datetime.TimeZone.of("Europe/Athens")),
+            kotlinx.datetime.TimeZone.of("Europe/Athens"),
         )
-        Clock.fixed(instant.toInstant(), instant.zone)
     }
 
     @Test
     fun `a vp_token where the 3d document has an invalid validity info should fail`() = runTest {
         val invalidDocument = run {
             val validator = deviceResponseValidator(Data.caCerts, clock)
-            val validated = validator.ensureValid(Data.ThreeDocumentVP)
+            val validated = validator.ensureValid(Data.ThreeDocumentVP, null)
             val invalidDocuments =
                 assertIs<DeviceResponseError.InvalidDocuments>(validated.leftOrNull())
                     .invalidDocuments
@@ -106,7 +104,7 @@ class DeviceResponseValidatorTest {
             val trustSources = ProvideTrustSource.forAll(
                 X5CShouldBe.Trusted(Data.caCerts) {
                     isRevocationEnabled = false
-                    date = Date.from(clock.instant())
+                    date = clock.now().toJavaDate()
                 },
             )
 
@@ -114,9 +112,10 @@ class DeviceResponseValidatorTest {
                 clock = clock,
                 validityInfoShouldBe = ValidityInfoShouldBe.Ignored,
                 provideTrustSource = trustSources,
+                statusListTokenValidator = null,
             )
             val vpValidator = DeviceResponseValidator(docV)
-            val validated = vpValidator.ensureValid(Data.ThreeDocumentVP)
+            val validated = vpValidator.ensureValid(Data.ThreeDocumentVP, null)
             assertNotNull(validated.getOrNull())
         }
 
@@ -126,7 +125,7 @@ class DeviceResponseValidatorTest {
     @Test
     fun `a vp_token having a single document with invalid chain should fail`() = runTest {
         val invalidDocument = run {
-            val validated = deviceResponseValidator(Data.caCerts, clock).ensureValid(Data.MdlVP)
+            val validated = deviceResponseValidator(Data.caCerts, clock).ensureValid(Data.MdlVP, null)
             val invalidDocuments =
                 assertIs<DeviceResponseError.InvalidDocuments>(validated.leftOrNull())
                     .invalidDocuments
@@ -144,9 +143,9 @@ class DeviceResponseValidatorTest {
     @Test
     fun `a vp_token having a single document skipping chain validation should be valid`() = runTest {
         val validDocuments = run {
-            val docV = DocumentValidator(provideTrustSource = ProvideTrustSource.Ignored)
+            val docV = DocumentValidator(provideTrustSource = ProvideTrustSource.Ignored, clock = clock, statusListTokenValidator = null)
             val vpValidator = DeviceResponseValidator(docV)
-            val validated = vpValidator.ensureValid(Data.MdlVP)
+            val validated = vpValidator.ensureValid(Data.MdlVP, null)
             assertNotNull(validated.getOrNull())
         }
 
@@ -157,13 +156,14 @@ class DeviceResponseValidatorTest {
 private fun deviceResponseValidator(caCerts: NonEmptyList<X509Certificate>, clock: Clock): DeviceResponseValidator {
     val x5CShouldBe = X5CShouldBe.Trusted(Data.caCerts) {
         isRevocationEnabled = false
-        date = Date.from(clock.instant())
+        date = clock.now().toJavaDate()
     }
     val documentValidator = DocumentValidator(
         clock,
         ValidityInfoShouldBe.NotExpired,
         IssuerSignedItemsShouldBe.Verified,
         provideTrustSource = ProvideTrustSource.forAll(x5CShouldBe),
+        statusListTokenValidator = null,
     )
     return DeviceResponseValidator(documentValidator)
 }

@@ -20,11 +20,12 @@ import com.nimbusds.jose.EncryptionMethod
 import com.nimbusds.jose.JWEAlgorithm
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.JWSVerifier
-import com.nimbusds.jose.crypto.RSASSAVerifier
-import com.nimbusds.jose.jwk.RSAKey
+import com.nimbusds.jose.crypto.ECDSAVerifier
+import com.nimbusds.jose.jwk.ECKey
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.CreateJarNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.GenerateEphemeralEncryptionKeyPairNimbus
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.ParseJarmOptionNimbus
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.keystore.loadJWK
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.keystore.loadKeyStore
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.persistence.PresentationInMemoryRepo
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.qrcode.GenerateQrCodeFromData
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.ParsePemEncodedX509CertificateChainWithNimbus
@@ -34,60 +35,58 @@ import eu.europa.ec.eudi.verifier.endpoint.port.input.InitTransactionLive
 import eu.europa.ec.eudi.verifier.endpoint.port.out.cfg.CreateQueryWalletResponseRedirectUri
 import eu.europa.ec.eudi.verifier.endpoint.port.out.cfg.GenerateRequestId
 import eu.europa.ec.eudi.verifier.endpoint.port.out.cfg.GenerateTransactionId
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.context.ApplicationContextInitializer
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Primary
 import org.springframework.context.support.GenericApplicationContext
 import org.springframework.core.annotation.AliasFor
-import org.springframework.core.io.ClassPathResource
 import org.springframework.test.context.ContextConfiguration
-import java.security.KeyStore
-import java.time.Clock
-import java.time.LocalDate
-import java.time.ZoneOffset
 import kotlin.reflect.KClass
 
 object TestContext {
-    private val testDate = LocalDate.of(1974, 11, 2).atTime(10, 5, 33)
-    val testClock: Clock = Clock.fixed(testDate.toInstant(ZoneOffset.UTC), ZoneOffset.UTC)
+    private val testDate = LocalDateTime(1974, 11, 2, 10, 5, 33).toInstant(TimeZone.UTC)
+    val testClock: Clock = Clock.fixed(testDate, TimeZone.UTC)
     val testTransactionId = TransactionId("SampleTxId")
     private val generatedTransactionId = GenerateTransactionId.fixed(testTransactionId)
     val testRequestId = RequestId("SampleRequestId")
     private val generateRequestId = GenerateRequestId.fixed(testRequestId)
-    private val rsaJwk = run {
-        ClassPathResource("test-cert.jks").inputStream.use {
-            val keystore = KeyStore.getInstance("JKS").apply {
-                load(it, "".toCharArray())
-            }
-            RSAKey.load(keystore, "client-id", "".toCharArray())
-        }
+    private val ecJwk: ECKey = run {
+        loadKeyStore(location = "classpath:keystore.jks", type = "jks", password = "keystore")
+            .loadJWK(alias = "verifier", password = "verifier")
+            .toECKey()
     }
+    private val responseEncryptionOption =
+        ResponseEncryptionOption(JWEAlgorithm.ECDH_ES, nonEmptyListOf(EncryptionMethod.A128GCM, EncryptionMethod.A256GCM))
     val clientMetaData = ClientMetaData(
-        idTokenSignedResponseAlg = JWSAlgorithm.RS256.name,
-        idTokenEncryptedResponseAlg = JWEAlgorithm.RSA_OAEP_256.name,
-        idTokenEncryptedResponseEnc = EncryptionMethod.A128CBC_HS256.name,
-        subjectSyntaxTypesSupported = listOf("urn:ietf:params:oauth:jwk-thumbprint", "did:example", "did:key"),
-        jarmOption = ParseJarmOptionNimbus(null, JWEAlgorithm.ECDH_ES.name, "A256GCM")!!,
-        vpFormats = VpFormats(
-            VpFormat.SdJwtVc(nonEmptyListOf(JWSAlgorithm.ES256), nonEmptyListOf(JWSAlgorithm.ES256, JWSAlgorithm.RS256)),
-            VpFormat.MsoMdoc(nonEmptyListOf(JWSAlgorithm.ES256)),
+        responseEncryptionOption = responseEncryptionOption,
+        vpFormatsSupported = VpFormatsSupported(
+            VpFormatsSupported.SdJwtVc(
+                sdJwtAlgorithms = nonEmptyListOf(JWSAlgorithm.ES256),
+                kbJwtAlgorithms = nonEmptyListOf(JWSAlgorithm.ES256, JWSAlgorithm.RS256),
+            ),
+            VpFormatsSupported.MsoMdoc(
+                issuerAuthAlgorithms = null,
+                deviceAuthAlgorithms = null,
+            ),
         ),
     )
-    private val jarSigningConfig: SigningConfig = SigningConfig(rsaJwk, JWSAlgorithm.RS256)
-    val verifierId = VerifierId.X509SanDns("client-id", jarSigningConfig)
+    private val jarSigningConfig: SigningConfig = SigningConfig(ecJwk, JWSAlgorithm.ES512)
+    val verifierId = VerifierId.X509SanDns("verifier", jarSigningConfig)
     val createJar: CreateJarNimbus = CreateJarNimbus()
-    val signedRequestObjectVerifier: JWSVerifier = RSASSAVerifier(rsaJwk)
+    val signedRequestObjectVerifier: JWSVerifier = ECDSAVerifier(ecJwk)
     private val repo = PresentationInMemoryRepo()
     val loadPresentationById = repo.loadPresentationById
     private val storePresentation = repo.storePresentation
-    private val generateEphemeralKey = GenerateEphemeralEncryptionKeyPairNimbus
+    private val generateEphemeralKey = GenerateEphemeralEncryptionKeyPairNimbus(responseEncryptionOption)
     private val generateQrCode = GenerateQrCodeFromData
 
     fun initTransaction(
         verifierConfig: VerifierConfig,
         requestJarByReference: EmbedOption.ByReference<RequestId>,
-        presentationDefinitionByReference: EmbedOption.ByReference<RequestId>,
     ): InitTransaction =
         InitTransactionLive(
             generatedTransactionId,
@@ -98,8 +97,7 @@ object TestContext {
             testClock,
             generateEphemeralKey,
             requestJarByReference,
-            presentationDefinitionByReference,
-            CreateQueryWalletResponseRedirectUri.Simple,
+            CreateQueryWalletResponseRedirectUri.simple("https"),
             repo.publishPresentationEvent,
             ParsePemEncodedX509CertificateChainWithNimbus,
             generateQrCode,
@@ -132,6 +130,6 @@ internal annotation class VerifierApplicationTest(
  */
 internal class BeansDslApplicationContextInitializer : ApplicationContextInitializer<GenericApplicationContext> {
     override fun initialize(applicationContext: GenericApplicationContext) {
-        beans(Clock.systemDefaultZone()).initializer().initialize(applicationContext)
+        beans(Clock.System).initializer().initialize(applicationContext)
     }
 }

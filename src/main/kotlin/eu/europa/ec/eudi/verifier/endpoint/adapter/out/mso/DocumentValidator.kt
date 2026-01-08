@@ -23,15 +23,17 @@ import com.nimbusds.jose.jwk.ECKey
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.ProvideTrustSource
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CValidator
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.StatusListTokenValidator
+import eu.europa.ec.eudi.verifier.endpoint.domain.Clock
+import eu.europa.ec.eudi.verifier.endpoint.domain.TransactionId
 import id.walt.mdoc.COSECryptoProviderKeyInfo
 import id.walt.mdoc.SimpleCOSECryptoProvider
 import id.walt.mdoc.doc.MDoc
 import id.walt.mdoc.mso.ValidityInfo
-import kotlinx.datetime.toJavaInstant
+import kotlinx.datetime.toStdlibInstant
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
-import java.time.Clock
-import java.time.Instant
+import kotlin.time.Instant
 
 enum class ValidityInfoShouldBe {
     NotExpired,
@@ -53,16 +55,18 @@ sealed interface DocumentError {
     data object DocumentTypeNotMatching : DocumentError
     data object InvalidIssuerSignedItems : DocumentError
     data object NoMatchingX5CShouldBe : DocumentError
+    data object DocumentHasBeenRevoked : DocumentError
 }
 
 class DocumentValidator(
-    private val clock: Clock = Clock.systemDefaultZone(),
+    private val clock: Clock = Clock.System,
     private val validityInfoShouldBe: ValidityInfoShouldBe = ValidityInfoShouldBe.NotExpired,
     private val issuerSignedItemsShouldBe: IssuerSignedItemsShouldBe = IssuerSignedItemsShouldBe.Verified,
     private val provideTrustSource: ProvideTrustSource,
+    private val statusListTokenValidator: StatusListTokenValidator?,
 ) {
 
-    suspend fun ensureValid(document: MDoc): EitherNel<DocumentError, MDoc> =
+    suspend fun ensureValid(document: MDoc, transactionId: TransactionId?): EitherNel<DocumentError, MDoc> =
         either {
             document.decodeMso()
 
@@ -74,7 +78,8 @@ class DocumentValidator(
                 { ensureMatchingDocumentType(document) },
                 { ensureDigestsOfIssuerSignedItems(document, issuerSignedItemsShouldBe) },
                 { ensureValidIssuerSignature(document, issuerChain, x5CShouldBe.caCertificates()) },
-            ) { _, _, _, _ -> document }
+                { ensureNotRevoked(document, statusListTokenValidator, transactionId) },
+            ) { _, _, _, _, _ -> document }
         }
 }
 
@@ -84,9 +89,9 @@ private fun Raise<DocumentError>.ensureNotExpiredValidityInfo(
     validityInfoShouldBe: ValidityInfoShouldBe,
 ) {
     fun ValidityInfo.notExpired() {
-        val validFrom = validFrom.value.toJavaInstant()
-        val validTo = validUntil.value.toJavaInstant()
-        val now = clock.instant()
+        val validFrom = validFrom.value.toStdlibInstant()
+        val validTo = validUntil.value.toStdlibInstant()
+        val now = clock.now()
         ensure(now in validFrom..validTo) {
             DocumentError.ExpiredValidityInfo(validFrom, validTo)
         }
@@ -154,11 +159,10 @@ private val ECKey.coseAlgorithmID: AlgorithmID
 private fun Raise<DocumentError.InvalidIssuerSignedItems>.ensureDigestsOfIssuerSignedItems(
     document: MDoc,
     issuerSignedItemsShouldBe: IssuerSignedItemsShouldBe,
-) = when (issuerSignedItemsShouldBe) {
-    IssuerSignedItemsShouldBe.Verified ->
+) {
+    if (issuerSignedItemsShouldBe == IssuerSignedItemsShouldBe.Verified) {
         ensure(document.verifyIssuerSignedItems()) { DocumentError.InvalidIssuerSignedItems }
-
-    IssuerSignedItemsShouldBe.Ignored -> {}
+    }
 }
 
 private fun Raise<Nel<DocumentError.X5CNotTrusted>>.ensureTrustedChain(
@@ -204,3 +208,17 @@ private suspend fun Raise<Nel<DocumentError.NoMatchingX5CShouldBe>>.ensureMatchi
     document: MDoc,
     trustSourceProvider: ProvideTrustSource,
 ): X5CShouldBe = trustSourceProvider(document.docType.value) ?: raise(DocumentError.NoMatchingX5CShouldBe.nel())
+
+private suspend fun Raise<DocumentError.DocumentHasBeenRevoked>.ensureNotRevoked(
+    document: MDoc,
+    statusListTokenValidator: StatusListTokenValidator?,
+    transactionId: TransactionId?,
+) {
+    if (null != statusListTokenValidator) {
+        catch({
+            statusListTokenValidator.validate(document, transactionId)
+        }) {
+            raise(DocumentError.DocumentHasBeenRevoked)
+        }
+    }
+}

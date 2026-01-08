@@ -15,11 +15,8 @@
  */
 package eu.europa.ec.eudi.verifier.endpoint.port.out.jose
 
-import eu.europa.ec.eudi.verifier.endpoint.domain.EncryptionRequirement
-import eu.europa.ec.eudi.verifier.endpoint.domain.Jwt
-import eu.europa.ec.eudi.verifier.endpoint.domain.Presentation
-import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierConfig
-import java.time.Clock
+import arrow.core.Either
+import eu.europa.ec.eudi.verifier.endpoint.domain.*
 
 /**
  * An out port that signs and encrypts a [Presentation.Requested]
@@ -31,5 +28,5 @@ fun interface CreateJar {
         presentation: Presentation.Requested,
         walletNonce: String?,
         walletJarEncryptionRequirement: EncryptionRequirement,
-    ): Result<Jwt>
+    ): Either<Throwable, Jwt>
 }

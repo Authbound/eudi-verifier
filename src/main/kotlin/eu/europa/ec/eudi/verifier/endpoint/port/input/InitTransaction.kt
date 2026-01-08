@@ -17,21 +17,19 @@
 
 package eu.europa.ec.eudi.verifier.endpoint.port.input
 
-import arrow.core.Either
-import arrow.core.NonEmptyList
+import arrow.core.*
+import arrow.core.raise.Raise
 import arrow.core.raise.either
 import arrow.core.raise.ensure
-import arrow.core.toNonEmptyListOrNull
+import arrow.core.raise.ensureNotNull
 import com.eygraber.uri.Uri
 import com.eygraber.uri.toURI
+import com.nimbusds.jose.EncryptionMethod
+import com.nimbusds.jose.JWEAlgorithm
 import com.nimbusds.jose.JWSAlgorithm
-import eu.europa.ec.eudi.prex.PresentationDefinition
-import eu.europa.ec.eudi.sdjwt.SdJwtVcSpec
-import eu.europa.ec.eudi.verifier.endpoint.adapter.input.web.VerifierApi
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.json.decodeAs
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.metadata.MsoMdocFormatTO
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.metadata.SdJwtVcFormatTO
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.utils.applyCatching
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.utils.getOrThrow
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.isSelfSigned
 import eu.europa.ec.eudi.verifier.endpoint.domain.*
 import eu.europa.ec.eudi.verifier.endpoint.port.out.cfg.CreateQueryWalletResponseRedirectUri
 import eu.europa.ec.eudi.verifier.endpoint.port.out.cfg.GenerateRequestId
@@ -45,11 +43,7 @@ import eu.europa.ec.eudi.verifier.endpoint.port.out.qrcode.GenerateQrCode
 import eu.europa.ec.eudi.verifier.endpoint.port.out.qrcode.Pixels.Companion.pixels
 import eu.europa.ec.eudi.verifier.endpoint.port.out.qrcode.by
 import eu.europa.ec.eudi.verifier.endpoint.port.out.x509.ParsePemEncodedX509CertificateChain
-import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.Required
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.Transient
+import kotlinx.serialization.*
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
@@ -59,37 +53,6 @@ import org.slf4j.LoggerFactory
 import java.net.URI
 import java.net.URL
 import java.security.cert.X509Certificate
-import java.time.Clock
-
-/**
- * Represent the kind of [Presentation] process
- * a caller wants to initiate
- * It could be either a request (to the wallet) to present
- * an id_token, a vp_token or both
- */
-@Serializable
-enum class PresentationTypeTO {
-    @SerialName("id_token")
-    IdTokenRequest,
-
-    @SerialName("vp_token")
-    VpTokenRequest,
-
-    @SerialName("vp_token id_token")
-    IdAndVpTokenRequest,
-}
-
-/**
- * Specifies what kind of id_token to request
- */
-@Serializable
-enum class IdTokenTypeTO {
-    @SerialName("subject_signed_id_token")
-    SubjectSigned,
-
-    @SerialName("attester_signed_id_token")
-    AttesterSigned,
-}
 
 /**
  * Specifies request_uri_method for a request
@@ -108,10 +71,10 @@ enum class RequestUriMethodTO {
  */
 @Serializable
 enum class ResponseModeTO {
-    @SerialName(OpenId4VPSpec.DIRECT_POST)
+    @SerialName(OpenId4VPSpec.RESPONSE_MODE_DIRECT_POST)
     DirectPost,
 
-    @SerialName(OpenId4VPSpec.DIRECT_POST_JWT)
+    @SerialName(OpenId4VPSpec.RESPONSE_MODE_DIRECT_POST_JWT)
     DirectPostJwt,
 }
 
@@ -127,36 +90,67 @@ enum class EmbedModeTO {
     ByReference,
 }
 
+/**
+ * The Profile to active for a Transaction.
+ */
+@Serializable
+enum class ProfileTO {
+    /**
+     * Initialize a Transaction per OpenId4VP. No constraints enforced.
+     */
+    @SerialName("openid4vp")
+    OpenId4VP,
+
+    /**
+     * Initialize a Transaction per HAIP. Extra constraints enforced.
+     */
+    @SerialName("haip")
+    HAIP,
+}
+
 @Serializable
 data class InitTransactionTO(
-    @SerialName("type") val type: PresentationTypeTO = PresentationTypeTO.IdAndVpTokenRequest,
-    @SerialName("id_token_type") val idTokenType: IdTokenTypeTO? = null,
-    @SerialName("presentation_definition") val presentationDefinition: PresentationDefinition? = null,
-    @SerialName("dcql_query") val dcqlQuery: DCQL? = null,
-    @SerialName("nonce") val nonce: String? = null,
-    @SerialName("response_mode") val responseMode: ResponseModeTO? = null,
+    @SerialName(OpenId4VPSpec.DCQL_QUERY) val dcqlQuery: DCQL? = null,
+    @SerialName(OpenId4VPSpec.NONCE) val nonce: String? = null,
+    @SerialName(RFC6749.RESPONSE_MODE) val responseMode: ResponseModeTO? = null,
     @SerialName("jar_mode") val jarMode: EmbedModeTO? = null,
-    @SerialName("request_uri_method") val requestUriMethod: RequestUriMethodTO? = null,
-    @SerialName("presentation_definition_mode") val presentationDefinitionMode: EmbedModeTO? = null,
+    @SerialName(OpenId4VPSpec.REQUEST_URI_METHOD) val requestUriMethod: RequestUriMethodTO? = null,
     @SerialName("wallet_response_redirect_uri_template") val redirectUriTemplate: String? = null,
-    @SerialName("transaction_data") val transactionData: List<JsonObject>? = null,
+    @SerialName(OpenId4VPSpec.TRANSACTION_DATA) val transactionData: List<JsonObject>? = null,
     @SerialName("issuer_chain") val issuerChain: String? = null,
     @SerialName("authorization_request_scheme") val authorizationRequestScheme: String? = null,
+    @SerialName("authorization_request_uri") val authorizationRequestUri: String? = null,
+    @SerialName("profile") val profile: ProfileTO? = ProfileTO.OpenId4VP,
     @Transient val output: Output = Output.Json,
 )
+
+private val InitTransactionTO.profileOrDefault: ProfileTO
+    get() = profile ?: ProfileTO.OpenId4VP
 
 /**
  * Possible validation errors of caller's input
  */
-enum class ValidationError {
-    MissingPresentationQuery,
-    MultiplePresentationQueries,
-    MissingNonce,
-    InvalidWalletResponseTemplate,
-    InvalidTransactionData,
-    UnsupportedFormat,
-    InvalidIssuerChain,
-    InvalidAuthorizationRequestScheme,
+sealed interface ValidationError {
+    data object MissingPresentationQuery : ValidationError
+    data object MissingNonce : ValidationError
+    data object InvalidWalletResponseTemplate : ValidationError
+    data object InvalidTransactionData : ValidationError
+    data object UnsupportedFormat : ValidationError
+    data object InvalidIssuerChain : ValidationError
+    data object ContainsBothAuthorizationRequestUriAndAuthorizationRequestScheme : ValidationError
+    data object InvalidAuthorizationRequestUri : ValidationError
+    data object InvalidAuthorizationRequestScheme : ValidationError
+
+    sealed interface HaipNotSupported : ValidationError {
+        data object SdJwtVcOrMsoMdocMustBeSupported : HaipNotSupported
+        data object JwsAlgorithmES256MustBeSupported : HaipNotSupported
+        data object ClientIdPrefixX509HashMustBeUsed : HaipNotSupported
+        data object SelfSignedCertificateMustNotBeUsed : HaipNotSupported
+        data object EncryptionAlgorithmECDHESMustBeSupported : HaipNotSupported
+        data object EncryptionMethodsA128GCMAndA256GCMMustBeSupported : HaipNotSupported
+        data object ResponseModeDirectPostJwtMustBeUsed : HaipNotSupported
+        data object AuthorizationRequestMustBeProvidedByReference : HaipNotSupported
+    }
 }
 
 enum class Output {
@@ -169,8 +163,25 @@ sealed interface InitTransactionResponse {
      * The return value of successfully [initializing][InitTransaction] a [Presentation] as a QR Code
      *
      */
-    @JvmInline
-    value class QrCode(val qrCode: ByteArray) : InitTransactionResponse
+    data class QrCode(
+        val qrCode: ByteArray,
+        val transactionId: String,
+        val authorizationRequestUri: String,
+    ) : InitTransactionResponse {
+
+        override fun equals(other: Any?): Boolean =
+            other is QrCode &&
+                qrCode.contentEquals(other.qrCode) &&
+                transactionId == other.transactionId &&
+                authorizationRequestUri == other.authorizationRequestUri
+
+        override fun hashCode(): Int {
+            var result = qrCode.contentHashCode()
+            result = 31 * result + transactionId.hashCode()
+            result = 31 * result + authorizationRequestUri.hashCode()
+            return result
+        }
+    }
 
     /**
      * The return value of successfully [initializing][InitTransaction] a [Presentation] as a JSON
@@ -179,10 +190,11 @@ sealed interface InitTransactionResponse {
     @Serializable
     data class JwtSecuredAuthorizationRequestTO(
         @Required @SerialName("transaction_id") val transactionId: String,
-        @Required @SerialName("client_id") val clientId: ClientId,
-        @SerialName("request") val request: String?,
-        @SerialName("request_uri") val requestUri: String?,
-        @SerialName("request_uri_method") val requestUriMethod: RequestUriMethodTO?,
+        @Required @SerialName(RFC6749.CLIENT_ID) val clientId: ClientId,
+        @SerialName(RFC9101.REQUEST) val request: String?,
+        @SerialName(RFC9101.REQUEST_URI) val requestUri: String?,
+        @SerialName(OpenId4VPSpec.REQUEST_URI_METHOD) val requestUriMethod: RequestUriMethodTO?,
+        @SerialName("authorization_request_uri") val authorizationRequestUri: String,
     ) : InitTransactionResponse {
         companion object {
 
@@ -190,19 +202,29 @@ sealed interface InitTransactionResponse {
                 transactionId: String,
                 clientId: ClientId,
                 request: String,
-            ): JwtSecuredAuthorizationRequestTO = JwtSecuredAuthorizationRequestTO(transactionId, clientId, request, null, null)
+                authorizationRequestUri: URI,
+            ): JwtSecuredAuthorizationRequestTO = JwtSecuredAuthorizationRequestTO(
+                transactionId,
+                clientId,
+                request,
+                null,
+                null,
+                authorizationRequestUri.toString(),
+            )
 
             fun byReference(
                 transactionId: String,
                 clientId: ClientId,
                 requestUri: URL,
                 requestUriMethod: RequestUriMethodTO,
+                authorizationRequestUri: URI,
             ): JwtSecuredAuthorizationRequestTO = JwtSecuredAuthorizationRequestTO(
                 transactionId,
                 clientId,
                 null,
                 requestUri.toExternalForm(),
                 requestUriMethod,
+                authorizationRequestUri.toString(),
             )
         }
     }
@@ -210,9 +232,6 @@ sealed interface InitTransactionResponse {
 
 /**
  * This is a use case that initializes the [Presentation] process.
- *
- * The caller may define via [InitTransactionTO] what kind of transaction wants to initiate
- * This is represented by [PresentationTypeTO].
  *
  * Use case will initialize a [Presentation] process
  */
@@ -235,7 +254,6 @@ class InitTransactionLive(
     private val clock: Clock,
     private val generateEphemeralEncryptionKeyPair: GenerateEphemeralEncryptionKeyPair,
     private val requestJarByReference: EmbedOption.ByReference<RequestId>,
-    private val presentationDefinitionByReference: EmbedOption.ByReference<RequestId>,
     private val createQueryWalletResponseRedirectUri: CreateQueryWalletResponseRedirectUri,
     private val publishPresentationEvent: PublishPresentationEvent,
     private val parsePemEncodedX509CertificateChain: ParsePemEncodedX509CertificateChain,
@@ -250,61 +268,62 @@ class InitTransactionLive(
         // validate input
         val (nonce, type) = initTransactionTO.toDomain(
             verifierConfig.transactionDataHashAlgorithm,
-            verifierConfig.clientMetaData.vpFormats,
+            verifierConfig.clientMetaData.vpFormatsSupported,
         ).bind()
 
         // if response mode is direct post jwt then generate ephemeral key
         val responseMode = responseMode(initTransactionTO)
-        val newEphemeralEcPublicKey = ephemeralEncryptionKeyPair(responseMode)
 
         val getWalletResponseMethod = getWalletResponseMethod(initTransactionTO).bind()
         val issuerChain = issuerChain(initTransactionTO).bind()
-        logger.info("Issuer chain: ${issuerChain}")
+
+        val profile = initTransactionTO.profileOrDefault.toProfile()
+
         // Initialize presentation
         val requestedPresentation = Presentation.Requested(
             id = generateTransactionId(),
-            initiatedAt = clock.instant(),
+            initiatedAt = clock.now(),
+            query = type.query,
+            transactionData = type.transactionData,
             requestId = generateRequestId(),
-            type = type,
             nonce = nonce,
-            jarmEncryptionEphemeralKey = newEphemeralEcPublicKey,
             responseMode = responseMode,
-            presentationDefinitionMode = presentationDefinitionMode(initTransactionTO),
             getWalletResponseMethod = getWalletResponseMethod,
             requestUriMethod = requestUriMethod(initTransactionTO),
             issuerChain = issuerChain,
+            profile = profile,
         )
 
+        val jarMode = jarMode(initTransactionTO)
+
+        // validate according to the selected profile
+        with(profile.validator) {
+            validate(verifierConfig, requestedPresentation, jarMode)
+        }
+
         // create the request, which may update the presentation
-        val (updatedPresentation, request) = createRequest(requestedPresentation, jarMode(initTransactionTO))
+        val (updatedPresentation, request) = createRequest(
+            requestedPresentation,
+            jarMode,
+            authorizationRequestUri(initTransactionTO).bind(),
+        )
 
         val response = when (initTransactionTO.output) {
             Output.Json -> request
             Output.QrCode -> {
-                val scheme = authorizationRequestScheme(initTransactionTO).bind()
-                val authorizationRequest = createAuthorizationRequestUri(scheme, request)
                 InitTransactionResponse.QrCode(
-                    generateQrCode(authorizationRequest.toString(), size = (250.pixels by 250.pixels)).getOrThrow(),
+                    generateQrCode(request.authorizationRequestUri, size = (250.pixels by 250.pixels)).getOrThrow(),
+                    request.transactionId,
+                    request.authorizationRequestUri,
                 )
             }
         }
 
         storePresentation(updatedPresentation)
-        logTransactionInitialized(updatedPresentation, request)
+        logTransactionInitialized(updatedPresentation, request, profile.toTO())
 
         response
     }
-
-    private fun ephemeralEncryptionKeyPair(responseModeOption: ResponseModeOption): EphemeralEncryptionKeyPairJWK? =
-        when (responseModeOption) {
-            ResponseModeOption.DirectPost -> null
-            ResponseModeOption.DirectPostJwt ->
-                when (val jarmOption = verifierConfig.clientMetaData.jarmOption) {
-                    is JarmOption.Signed -> error("Misconfiguration")
-                    is JarmOption.Encrypted -> jarmOption
-                    is JarmOption.SignedAndEncrypted -> jarmOption.encrypted
-                }.run { generateEphemeralEncryptionKeyPair(this).getOrThrow() }
-        }
 
     /**
      * Creates a request and depending on the case updates also the [requestedPresentation]
@@ -317,6 +336,7 @@ class InitTransactionLive(
     private fun createRequest(
         requestedPresentation: Presentation.Requested,
         requestJarOption: EmbedOption<RequestId>,
+        authorizationRequestUri: UnresolvedAuthorizationRequestUri,
     ): Pair<Presentation, InitTransactionResponse.JwtSecuredAuthorizationRequestTO> =
         when (requestJarOption) {
             is EmbedOption.ByValue -> {
@@ -333,20 +353,22 @@ class InitTransactionLive(
                     requestedPresentation.id.value,
                     verifierConfig.verifierId.clientId,
                     jwt,
+                    authorizationRequestUri.resolve(verifierConfig.verifierId, jwt).toURI(),
                 )
             }
 
             is EmbedOption.ByReference -> {
                 val requestUri = requestJarOption.buildUrl(requestedPresentation.requestId)
-                val requestUriMethod = when (requestedPresentation.requestUriMethod) {
-                    RequestUriMethod.Get -> RequestUriMethodTO.Get
-                    RequestUriMethod.Post -> RequestUriMethodTO.Post
-                }
                 requestedPresentation to InitTransactionResponse.JwtSecuredAuthorizationRequestTO.byReference(
                     requestedPresentation.id.value,
                     verifierConfig.verifierId.clientId,
                     requestUri,
-                    requestUriMethod,
+                    requestedPresentation.requestUriMethod.toTO(),
+                    authorizationRequestUri.resolve(
+                        verifierConfig.verifierId,
+                        Uri.parse(requestUri.toString()),
+                        requestedPresentation.requestUriMethod,
+                    ).toURI(),
                 )
             }
         }
@@ -362,15 +384,23 @@ class InitTransactionLive(
     }
 
     /**
-     * Gets the [ResponseModeOption] for the provided [InitTransactionTO].
-     * If none has been provided, falls back to [VerifierConfig.responseModeOption].
+     * Gets the [ResponseMode] for the provided [InitTransactionTO].
      */
-    private fun responseMode(initTransaction: InitTransactionTO): ResponseModeOption =
-        when (initTransaction.responseMode) {
+    private fun responseMode(initTransaction: InitTransactionTO): ResponseMode {
+        val responseModeOption = when (initTransaction.responseMode) {
             ResponseModeTO.DirectPost -> ResponseModeOption.DirectPost
             ResponseModeTO.DirectPostJwt -> ResponseModeOption.DirectPostJwt
             null -> verifierConfig.responseModeOption
         }
+
+        return when (responseModeOption) {
+            ResponseModeOption.DirectPost -> ResponseMode.DirectPost
+            ResponseModeOption.DirectPostJwt -> {
+                val responseEncryptionKey = generateEphemeralEncryptionKeyPair().getOrThrow()
+                ResponseMode.DirectPostJwt(responseEncryptionKey)
+            }
+        }
+    }
 
     /**
      * Gets the JAR [EmbedOption] for the provided [InitTransactionTO].
@@ -394,19 +424,12 @@ class InitTransactionLive(
             null -> verifierConfig.requestUriMethod
         }
 
-    /**
-     * Gets the PresentationDefinition [EmbedOption] for the provided [InitTransactionTO].
-     * If none has been provided, falls back to [VerifierConfig.presentationDefinitionEmbedOption].
-     */
-    private fun presentationDefinitionMode(initTransaction: InitTransactionTO): EmbedOption<RequestId> =
-        when (initTransaction.presentationDefinitionMode) {
-            EmbedModeTO.ByValue -> EmbedOption.ByValue
-            EmbedModeTO.ByReference -> presentationDefinitionByReference
-            null -> verifierConfig.presentationDefinitionEmbedOption
-        }
-
-    private suspend fun logTransactionInitialized(p: Presentation, request: InitTransactionResponse.JwtSecuredAuthorizationRequestTO) {
-        val event = PresentationEvent.TransactionInitialized(p.id, p.initiatedAt, request)
+    private suspend fun logTransactionInitialized(
+        presentation: Presentation,
+        request: InitTransactionResponse.JwtSecuredAuthorizationRequestTO,
+        profile: ProfileTO,
+    ) {
+        val event = PresentationEvent.TransactionInitialized(presentation.id, presentation.initiatedAt, request, profile)
         publishPresentationEvent(event)
     }
 
@@ -416,58 +439,56 @@ class InitTransactionLive(
         }.mapLeft { ValidationError.InvalidIssuerChain }
 
     /**
-     * Gets a [String] containing the authorization Request Scheme for the provided [InitTransactionTO].
-     * If none has been provided, falls back to [VerifierConfig.authorizationRequestScheme].
+     * Gets the [UnresolvedAuthorizationRequestUri] for the provided [InitTransactionTO].
+     * If none has been provided, falls back to [VerifierConfig.authorizationRequestUri].
+     *
+     * This method considers both [InitTransactionTO.authorizationRequestUri] and [InitTransactionTO.authorizationRequestScheme].
      */
-    private fun authorizationRequestScheme(initTransaction: InitTransactionTO): Either<ValidationError, String> = either {
-        val scheme = initTransaction.authorizationRequestScheme
-            .takeUnless { it.isNullOrBlank() } ?: verifierConfig.authorizationRequestScheme
-        ensure(!scheme.endsWith("://")) { ValidationError.InvalidAuthorizationRequestScheme }
-        scheme
-    }
+    private fun authorizationRequestUri(initTransaction: InitTransactionTO): Either<ValidationError, UnresolvedAuthorizationRequestUri> =
+        either {
+            when {
+                null != initTransaction.authorizationRequestUri && null != initTransaction.authorizationRequestScheme ->
+                    raise(ValidationError.ContainsBothAuthorizationRequestUriAndAuthorizationRequestScheme)
+
+                null != initTransaction.authorizationRequestUri ->
+                    UnresolvedAuthorizationRequestUri.fromUri(initTransaction.authorizationRequestUri).getOrElse {
+                        raise(ValidationError.InvalidAuthorizationRequestUri)
+                    }
+
+                null != initTransaction.authorizationRequestScheme ->
+                    UnresolvedAuthorizationRequestUri.fromScheme(initTransaction.authorizationRequestScheme).getOrElse {
+                        raise(ValidationError.InvalidAuthorizationRequestScheme)
+                    }
+
+                else -> verifierConfig.authorizationRequestUri
+            }
+        }
 }
 
 internal fun InitTransactionTO.toDomain(
     transactionDataHashAlgorithm: HashAlgorithm,
-    vpFormats: VpFormats,
-): Either<ValidationError, Pair<Nonce, PresentationType>> = either {
-    fun requiredIdTokenType() =
-        idTokenType?.toDomain()?.let { listOf(it) } ?: emptyList()
+    vpFormatsSupported: VpFormatsSupported,
+): Either<ValidationError, Pair<Nonce, VpTokenRequest>> = either {
+    fun requiredQuery(): DCQL {
+        ensureNotNull(dcqlQuery) { ValidationError.MissingPresentationQuery }
+        ensure(
+            dcqlQuery.credentials.value.all {
+                val format = it.format
+                vpFormatsSupported.supports(format)
+            },
+        ) { ValidationError.UnsupportedFormat }
 
-    fun requiredPresentationQuery(): PresentationQuery =
-        when {
-            presentationDefinition != null && dcqlQuery == null -> {
-                ensure(vpFormats.supportsFormats(presentationDefinition)) { ValidationError.UnsupportedFormat }
-                PresentationQuery.ByPresentationDefinition(presentationDefinition)
-            }
-            presentationDefinition == null && dcqlQuery != null -> {
-                ensure(
-                    dcqlQuery.formatsAre(
-                        SdJwtVcSpec.MEDIA_SUBTYPE_VC_SD_JWT,
-                        SdJwtVcSpec.MEDIA_SUBTYPE_DC_SD_JWT,
-                        OpenId4VPSpec.FORMAT_MSO_MDOC,
-                    ),
-                ) {
-                    ValidationError.UnsupportedFormat
-                }
-
-                PresentationQuery.ByDigitalCredentialsQueryLanguage(dcqlQuery)
-            }
-            presentationDefinition == null && dcqlQuery == null -> raise(ValidationError.MissingPresentationQuery)
-            else -> raise(ValidationError.MultiplePresentationQueries)
-        }
+        return dcqlQuery
+    }
 
     fun requiredNonce(): Nonce {
         ensure(!nonce.isNullOrBlank()) { ValidationError.MissingNonce }
         return Nonce(nonce)
     }
 
-    fun optionalTransactionData(query: PresentationQuery): NonEmptyList<TransactionData>? {
+    fun optionalTransactionData(query: DCQL): NonEmptyList<TransactionData>? {
         val credentialIds: List<String> by lazy {
-            when (query) {
-                is PresentationQuery.ByPresentationDefinition -> query.presentationDefinition.inputDescriptors.map { it.id.value }
-                is PresentationQuery.ByDigitalCredentialsQueryLanguage -> query.query.credentials.map { it.id.value }
-            }
+            query.credentials.ids.map { it.value }
         }
 
         val hashAlgorithms: JsonArray by lazy {
@@ -477,90 +498,119 @@ internal fun InitTransactionTO.toDomain(
         }
 
         return transactionData?.map {
-            TransactionData.validate(JsonObject(it + ("transaction_data_hashes_alg" to hashAlgorithms)), credentialIds)
-                .applyCatching {
-                    when (type) {
-                        QesAuthorization.TYPE -> QesAuthorization.serializer()
-                        QCertCreationAcceptance.TYPE -> QCertCreationAcceptance.serializer()
-                        else -> null
-                    }?.let { deserializer -> decodeAs(deserializer) }
+            TransactionData.validate(JsonObject(it + (OpenId4VPSpec.TRANSACTION_DATA_HASH_ALGORITHMS to hashAlgorithms)), credentialIds)
+                .flatMap { transactionData ->
+                    Either.catch {
+                        when (transactionData.type) {
+                            QesAuthorization.TYPE -> QesAuthorization.serializer()
+                            QCertCreationAcceptance.TYPE -> QCertCreationAcceptance.serializer()
+                            else -> null
+                        }?.let { deserializer -> it.decodeAs(deserializer) }
+                        transactionData
+                    }
                 }
                 .getOrElse { raise(ValidationError.InvalidTransactionData) }
         }?.toNonEmptyListOrNull()
     }
 
-    val presentationType = when (type) {
-        PresentationTypeTO.IdTokenRequest ->
-            PresentationType.IdTokenRequest(requiredIdTokenType())
-
-        PresentationTypeTO.VpTokenRequest -> {
-            val query = requiredPresentationQuery()
-            PresentationType.VpTokenRequest(query, optionalTransactionData(query))
-        }
-
-        PresentationTypeTO.IdAndVpTokenRequest -> {
-            val idTokenTypes = requiredIdTokenType()
-            val query = requiredPresentationQuery()
-            PresentationType.IdAndVpToken(idTokenTypes, query, optionalTransactionData(query))
-        }
-    }
-
+    val query = requiredQuery()
+    val presentationType = VpTokenRequest(query, optionalTransactionData(query))
     val nonce = requiredNonce()
 
     nonce to presentationType
 }
 
-private fun VpFormats.supportsFormats(presentationDefinition: PresentationDefinition): Boolean =
-    presentationDefinition.inputDescriptors.all { inputDescriptor ->
-        val format = inputDescriptor.format ?: presentationDefinition.format
-        format?.let {
-            it.jsonObject().all { (identifier, serializedProperties) ->
-                when (identifier) {
-                    SdJwtVcSpec.MEDIA_SUBTYPE_VC_SD_JWT, SdJwtVcSpec.MEDIA_SUBTYPE_DC_SD_JWT ->
-                        serializedProperties.decodeAs<SdJwtVcFormatTO>()
-                            .map { properties -> sdJwtVc.supports(properties.sdJwtAlgorithms, properties.kbJwtAlgorithms) }
-                            .getOrElse { false }
-
-                    OpenId4VPSpec.FORMAT_MSO_MDOC ->
-                        serializedProperties.decodeAs<MsoMdocFormatTO>()
-                            .map { properties -> msoMdoc.supports(properties.algorithms) }
-                            .getOrElse { false }
-
-                    else -> false
-                }
-            }
-        } ?: true
+private fun RequestUriMethod.toTO(): RequestUriMethodTO =
+    when (this) {
+        RequestUriMethod.Get -> RequestUriMethodTO.Get
+        RequestUriMethod.Post -> RequestUriMethodTO.Post
     }
 
-private fun DCQL.formatsAre(vararg supportedFormats: String): Boolean = credentials.all { it.format.value in supportedFormats }
+private fun <T : Any, U : T> Collection<T>.containsAny(first: U, vararg rest: U): Boolean = first in this || rest.any { it in this }
 
-private fun IdTokenTypeTO.toDomain(): IdTokenType = when (this) {
-    IdTokenTypeTO.SubjectSigned -> IdTokenType.SubjectSigned
-    IdTokenTypeTO.AttesterSigned -> IdTokenType.AttesterSigned
+private fun interface ProfileValidator {
+    suspend fun Raise<ValidationError>.validate(
+        config: VerifierConfig,
+        presentation: Presentation.Requested,
+        jarMode: EmbedOption<RequestId>,
+    )
+
+    companion object {
+        val OpenId4VP = ProfileValidator { _, _, _ -> }
+        val HAIP = ProfileValidator { config, presentation, jarMode ->
+            with(config.clientMetaData.vpFormatsSupported) {
+                ensure(null != sdJwtVc || null != msoMdoc) {
+                    ValidationError.HaipNotSupported.SdJwtVcOrMsoMdocMustBeSupported
+                }
+
+                if (null != sdJwtVc) {
+                    ensure(null == sdJwtVc.sdJwtAlgorithms || JWSAlgorithm.ES256 in sdJwtVc.sdJwtAlgorithms) {
+                        ValidationError.HaipNotSupported.JwsAlgorithmES256MustBeSupported
+                    }
+                    ensure(null == sdJwtVc.kbJwtAlgorithms || JWSAlgorithm.ES256 in sdJwtVc.kbJwtAlgorithms) {
+                        ValidationError.HaipNotSupported.JwsAlgorithmES256MustBeSupported
+                    }
+                }
+
+                if (null != msoMdoc) {
+                    ensure(
+                        null == msoMdoc.issuerAuthAlgorithms ||
+                            msoMdoc.issuerAuthAlgorithms.containsAny(CoseAlgorithm(-7), CoseAlgorithm(-9)),
+                    ) {
+                        ValidationError.HaipNotSupported.JwsAlgorithmES256MustBeSupported
+                    }
+
+                    ensure(
+                        null == msoMdoc.deviceAuthAlgorithms ||
+                            msoMdoc.deviceAuthAlgorithms.containsAny(CoseAlgorithm(-7), CoseAlgorithm(-9)),
+                    ) {
+                        ValidationError.HaipNotSupported.JwsAlgorithmES256MustBeSupported
+                    }
+                }
+            }
+
+            with(config.clientMetaData.responseEncryptionOption) {
+                ensure(JWEAlgorithm.ECDH_ES == algorithm) {
+                    ValidationError.HaipNotSupported.EncryptionAlgorithmECDHESMustBeSupported
+                }
+
+                ensure(encryptionMethods.containsAll(listOf(EncryptionMethod.A128GCM, EncryptionMethod.A256GCM))) {
+                    ValidationError.HaipNotSupported.EncryptionMethodsA128GCMAndA256GCMMustBeSupported
+                }
+            }
+
+            ensure(config.verifierId is VerifierId.X509Hash) {
+                ValidationError.HaipNotSupported.ClientIdPrefixX509HashMustBeUsed
+            }
+            ensure(!config.verifierId.jarSigning.certificate.isSelfSigned()) {
+                ValidationError.HaipNotSupported.SelfSignedCertificateMustNotBeUsed
+            }
+
+            ensure(presentation.responseMode is ResponseMode.DirectPostJwt) {
+                ValidationError.HaipNotSupported.ResponseModeDirectPostJwtMustBeUsed
+            }
+
+            ensure(jarMode is EmbedOption.ByReference) {
+                ValidationError.HaipNotSupported.AuthorizationRequestMustBeProvidedByReference
+            }
+        }
+    }
 }
 
-private fun VpFormat.SdJwtVc.supports(sdJwtAlgorithms: List<JWSAlgorithm>, kbJwtAlgorithms: List<JWSAlgorithm>): Boolean =
-    this.sdJwtAlgorithms.intersect(sdJwtAlgorithms.toSet()).isNotEmpty() &&
-        this.kbJwtAlgorithms.intersect(kbJwtAlgorithms.toSet()).isNotEmpty()
+private fun ProfileTO.toProfile(): Profile =
+    when (this) {
+        ProfileTO.OpenId4VP -> Profile.OpenId4VP
+        ProfileTO.HAIP -> Profile.HAIP
+    }
 
-private fun VpFormat.MsoMdoc.supports(algorithms: List<JWSAlgorithm>): Boolean =
-    this.algorithms.intersect(algorithms.toSet()).isNotEmpty()
+private fun Profile.toTO(): ProfileTO =
+    when (this) {
+        Profile.OpenId4VP -> ProfileTO.OpenId4VP
+        Profile.HAIP -> ProfileTO.HAIP
+    }
 
-private fun createAuthorizationRequestUri(
-    scheme: String,
-    authorizationRequest: InitTransactionResponse.JwtSecuredAuthorizationRequestTO,
-): URI =
-    Uri.Builder().apply {
-        scheme(scheme)
-        authority("")
-        appendQueryParameter(OpenId4VPSpec.CLIENT_ID, authorizationRequest.clientId)
-        authorizationRequest.request?.let { appendQueryParameter(OpenId4VPSpec.REQUEST, it) }
-        authorizationRequest.requestUri?.let { appendQueryParameter(OpenId4VPSpec.REQUEST_URI, it) }
-        authorizationRequest.requestUriMethod?.let {
-            val requestUriMethod = when (it) {
-                RequestUriMethodTO.Get -> OpenId4VPSpec.REQUEST_URI_METHOD_GET
-                RequestUriMethodTO.Post -> OpenId4VPSpec.REQUEST_URI_METHOD_GET
-            }
-            appendQueryParameter(OpenId4VPSpec.REQUEST_URI_METHOD, requestUriMethod)
-        }
-    }.build().toURI()
+private val Profile.validator: ProfileValidator
+    get() = when (this) {
+        Profile.OpenId4VP -> ProfileValidator.OpenId4VP
+        Profile.HAIP -> ProfileValidator.HAIP
+    }

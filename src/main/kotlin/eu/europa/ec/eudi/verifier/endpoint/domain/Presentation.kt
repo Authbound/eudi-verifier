@@ -15,13 +15,11 @@
  */
 package eu.europa.ec.eudi.verifier.endpoint.domain
 
+import arrow.core.Either
 import arrow.core.NonEmptyList
-import eu.europa.ec.eudi.prex.PresentationDefinition
-import eu.europa.ec.eudi.prex.PresentationSubmission
 import kotlinx.serialization.json.JsonObject
 import java.security.cert.X509Certificate
-import java.time.Clock
-import java.time.Instant
+import kotlin.time.Instant
 
 @JvmInline
 value class TransactionId(val value: String) {
@@ -52,87 +50,14 @@ value class Nonce(val value: String) {
 
 typealias Jwt = String
 
-enum class IdTokenType {
-    SubjectSigned,
-    AttesterSigned,
-}
-
-/**
- * The requirements of the Verifiable Presentations to be presented.
- */
-sealed interface PresentationQuery {
-
-    /**
-     * The requirements of the Verifiable Presentations to be presented, expressed using Presentation Definition.
-     */
-    data class ByPresentationDefinition(val presentationDefinition: PresentationDefinition) : PresentationQuery
-
-    /**
-     * The requirements of the Verifiable Presentations to be presented, expressed using DCQL.
-     */
-    data class ByDigitalCredentialsQueryLanguage(val query: DCQL) : PresentationQuery
-}
-
-val PresentationQuery.presentationDefinitionOrNull: PresentationDefinition?
-    get() = when (this) {
-        is PresentationQuery.ByPresentationDefinition -> presentationDefinition
-        is PresentationQuery.ByDigitalCredentialsQueryLanguage -> null
-    }
-
-val PresentationQuery.dcqlQueryOrNull: DCQL?
-    get() = when (this) {
-        is PresentationQuery.ByPresentationDefinition -> null
-        is PresentationQuery.ByDigitalCredentialsQueryLanguage -> query
-    }
-
 /**
  * Represents what the [Presentation] is asking
  * from the wallet
  */
-sealed interface PresentationType {
-    data class IdTokenRequest(
-        val idTokenType: List<IdTokenType>,
-    ) : PresentationType
-
-    data class VpTokenRequest(
-        val presentationQuery: PresentationQuery,
-        val transactionData: NonEmptyList<TransactionData>?,
-    ) : PresentationType
-
-    data class IdAndVpToken(
-        val idTokenType: List<IdTokenType>,
-        val presentationQuery: PresentationQuery,
-        val transactionData: NonEmptyList<TransactionData>?,
-    ) : PresentationType
-}
-
-val PresentationType.presentationQueryOrNull: PresentationQuery?
-    get() = when (this) {
-        is PresentationType.IdTokenRequest -> null
-        is PresentationType.VpTokenRequest -> presentationQuery
-        is PresentationType.IdAndVpToken -> presentationQuery
-    }
-
-val PresentationType.presentationDefinitionOrNull: PresentationDefinition?
-    get() = when (this) {
-        is PresentationType.IdTokenRequest -> null
-        is PresentationType.VpTokenRequest -> presentationQuery.presentationDefinitionOrNull
-        is PresentationType.IdAndVpToken -> presentationQuery.presentationDefinitionOrNull
-    }
-
-val PresentationType.dcqlQueryOrNull: DCQL?
-    get() = when (this) {
-        is PresentationType.IdTokenRequest -> null
-        is PresentationType.VpTokenRequest -> presentationQuery.dcqlQueryOrNull
-        is PresentationType.IdAndVpToken -> presentationQuery.dcqlQueryOrNull
-    }
-
-val PresentationType.transactionDataOrNull: NonEmptyList<TransactionData>?
-    get() = when (this) {
-        is PresentationType.IdTokenRequest -> null
-        is PresentationType.VpTokenRequest -> transactionData
-        is PresentationType.IdAndVpToken -> transactionData
-    }
+data class VpTokenRequest(
+    val query: DCQL,
+    val transactionData: NonEmptyList<TransactionData>?,
+)
 
 sealed interface VerifiablePresentation {
     val format: Format
@@ -153,71 +78,21 @@ sealed interface VerifiablePresentation {
 /**
  * The Wallet's response to a 'vp_token' request.
  */
-sealed interface VpContent {
-
-    /**
-     * A 'vp_token' response as defined by Presentation Exchange.
-     */
-    data class PresentationExchange(
-        val verifiablePresentations: NonEmptyList<VerifiablePresentation>,
-        val presentationSubmission: PresentationSubmission,
-    ) : VpContent {
-        init {
-            require(verifiablePresentations.size == verifiablePresentations.distinct().size)
-        }
-    }
-
-    /**
-     * A 'vp_token' response as defined by DCQL.
-     */
-    data class DCQL(val verifiablePresentations: Map<QueryId, VerifiablePresentation>) : VpContent {
-        init {
-            require(verifiablePresentations.isNotEmpty())
-        }
+@JvmInline
+value class VerifiablePresentations(val value: Map<QueryId, List<VerifiablePresentation>>) {
+    init {
+        require(value.isNotEmpty())
+        require(value.values.all { it.isNotEmpty() })
     }
 }
-
-internal fun VpContent.verifiablePresentations(): List<VerifiablePresentation> =
-    when (this) {
-        is VpContent.PresentationExchange -> verifiablePresentations
-        is VpContent.DCQL -> verifiablePresentations.values.distinct()
-    }
-
-internal fun VpContent.presentationSubmissionOrNull(): PresentationSubmission? =
-    when (this) {
-        is VpContent.PresentationExchange -> presentationSubmission
-        is VpContent.DCQL -> null
-    }
 
 sealed interface WalletResponse {
 
-    data class IdToken(
-        val idToken: Jwt,
-    ) : WalletResponse {
-        init {
-            require(idToken.isNotEmpty())
-        }
-    }
-
     data class VpToken(
-        val vpContent: VpContent,
+        val verifiablePresentations: VerifiablePresentations,
     ) : WalletResponse
 
-    data class IdAndVpToken(
-        val idToken: Jwt,
-        val vpContent: VpContent,
-    ) : WalletResponse {
-        init {
-            require(idToken.isNotEmpty())
-        }
-    }
-
     data class Error(val value: String, val description: String?) : WalletResponse
-}
-
-@JvmInline
-value class EphemeralEncryptionKeyPairJWK(val value: String) {
-    companion object
 }
 
 @JvmInline
@@ -229,12 +104,26 @@ sealed interface GetWalletResponseMethod {
 }
 
 /**
+ * Profile, i.e. rules, that govern a Transaction.
+ */
+sealed interface Profile {
+    /**
+     * [OpenId4VP](https://openid.net/specs/openid-4-verifiable-presentations-1_0.html)
+     */
+    data object OpenId4VP : Profile
+
+    /**
+     * [High Assurance Interoperability Profile](https://openid.net/specs/openid4vc-high-assurance-interoperability-profile-1_0.html)
+     */
+    data object HAIP : Profile
+}
+
+/**
  * The entity that represents the presentation process
  */
 sealed interface Presentation {
     val id: TransactionId
     val initiatedAt: Instant
-    val type: PresentationType
 
     /**
      * A presentation process that has been just requested
@@ -242,15 +131,15 @@ sealed interface Presentation {
     class Requested(
         override val id: TransactionId,
         override val initiatedAt: Instant,
-        override val type: PresentationType,
+        val query: DCQL,
+        val transactionData: NonEmptyList<TransactionData>?,
         val requestId: RequestId,
         val requestUriMethod: RequestUriMethod,
         val nonce: Nonce,
-        val jarmEncryptionEphemeralKey: EphemeralEncryptionKeyPairJWK?,
-        val responseMode: ResponseModeOption,
-        val presentationDefinitionMode: EmbedOption<RequestId>,
+        val responseMode: ResponseMode,
         val getWalletResponseMethod: GetWalletResponseMethod,
         val issuerChain: NonEmptyList<X509Certificate>?,
+        val profile: Profile,
     ) : Presentation
 
     /**
@@ -262,33 +151,35 @@ sealed interface Presentation {
     class RequestObjectRetrieved private constructor(
         override val id: TransactionId,
         override val initiatedAt: Instant,
-        override val type: PresentationType,
+        val query: DCQL,
+        val transactionData: NonEmptyList<TransactionData>?,
         val requestId: RequestId,
         val requestObjectRetrievedAt: Instant,
         val nonce: Nonce,
-        val ephemeralEcPrivateKey: EphemeralEncryptionKeyPairJWK?,
-        val responseMode: ResponseModeOption,
+        val responseMode: ResponseMode,
         val getWalletResponseMethod: GetWalletResponseMethod,
         val issuerChain: NonEmptyList<X509Certificate>?,
+        val profile: Profile,
     ) : Presentation {
         init {
-            require(initiatedAt.isBefore(requestObjectRetrievedAt) || initiatedAt == requestObjectRetrievedAt)
+            require(initiatedAt <= requestObjectRetrievedAt)
         }
 
         companion object {
-            fun requestObjectRetrieved(requested: Requested, at: Instant): Result<RequestObjectRetrieved> =
-                runCatching {
+            fun requestObjectRetrieved(requested: Requested, at: Instant): Either<Throwable, RequestObjectRetrieved> =
+                Either.catch {
                     RequestObjectRetrieved(
                         requested.id,
                         requested.initiatedAt,
-                        requested.type,
+                        requested.query,
+                        requested.transactionData,
                         requested.requestId,
                         at,
                         requested.nonce,
-                        requested.jarmEncryptionEphemeralKey,
                         requested.responseMode,
                         requested.getWalletResponseMethod,
                         requested.issuerChain,
+                        requested.profile,
                     )
                 }
         }
@@ -300,7 +191,6 @@ sealed interface Presentation {
     class Submitted private constructor(
         override val id: TransactionId,
         override val initiatedAt: Instant,
-        override val type: PresentationType,
         val requestId: RequestId,
         var requestObjectRetrievedAt: Instant,
         var submittedAt: Instant,
@@ -308,23 +198,17 @@ sealed interface Presentation {
         val nonce: Nonce,
         val responseCode: ResponseCode?,
     ) : Presentation {
-
-        init {
-            require(initiatedAt.isBefore(Instant.now()))
-        }
-
         companion object {
             fun submitted(
                 requestObjectRetrieved: RequestObjectRetrieved,
                 at: Instant,
                 walletResponse: WalletResponse,
                 responseCode: ResponseCode?,
-            ): Result<Submitted> = runCatching {
+            ): Either<Throwable, Submitted> = Either.catch {
                 with(requestObjectRetrieved) {
                     Submitted(
                         id,
                         initiatedAt,
-                        type,
                         requestId,
                         requestObjectRetrievedAt,
                         at,
@@ -340,35 +224,32 @@ sealed interface Presentation {
     class TimedOut private constructor(
         override val id: TransactionId,
         override val initiatedAt: Instant,
-        override val type: PresentationType,
         val requestObjectRetrievedAt: Instant? = null,
         val submittedAt: Instant? = null,
         val timedOutAt: Instant,
     ) : Presentation {
         companion object {
-            fun timeOut(presentation: Requested, at: Instant): Result<TimedOut> = runCatching {
-                require(presentation.initiatedAt.isBefore(at))
-                TimedOut(presentation.id, presentation.initiatedAt, presentation.type, null, null, at)
+            fun timeOut(presentation: Requested, at: Instant): Either<Throwable, TimedOut> = Either.catch {
+                require(presentation.initiatedAt < at)
+                TimedOut(presentation.id, presentation.initiatedAt, null, null, at)
             }
 
-            fun timeOut(presentation: RequestObjectRetrieved, at: Instant): Result<TimedOut> = runCatching {
-                require(presentation.initiatedAt.isBefore(at))
+            fun timeOut(presentation: RequestObjectRetrieved, at: Instant): Either<Throwable, TimedOut> = Either.catch {
+                require(presentation.initiatedAt < at)
                 TimedOut(
                     presentation.id,
                     presentation.initiatedAt,
-                    presentation.type,
                     presentation.requestObjectRetrievedAt,
                     null,
                     at,
                 )
             }
 
-            fun timeOut(presentation: Submitted, at: Instant): Result<TimedOut> = runCatching {
-                require(presentation.initiatedAt.isBefore(at))
+            fun timeOut(presentation: Submitted, at: Instant): Either<Throwable, TimedOut> = Either.catch {
+                require(presentation.initiatedAt < at)
                 TimedOut(
                     presentation.id,
                     presentation.initiatedAt,
-                    presentation.type,
                     presentation.requestObjectRetrievedAt,
                     presentation.submittedAt,
                     at,
@@ -379,7 +260,7 @@ sealed interface Presentation {
 }
 
 fun Presentation.isExpired(at: Instant): Boolean {
-    fun Instant.isBeforeOrEqual(at: Instant) = isBefore(at) || this == at
+    fun Instant.isBeforeOrEqual(at: Instant) = this <= at
     return when (this) {
         is Presentation.Requested -> initiatedAt.isBeforeOrEqual(at)
         is Presentation.RequestObjectRetrieved -> requestObjectRetrievedAt.isBeforeOrEqual(at)
@@ -388,21 +269,21 @@ fun Presentation.isExpired(at: Instant): Boolean {
     }
 }
 
-fun Presentation.Requested.retrieveRequestObject(clock: Clock): Result<Presentation.RequestObjectRetrieved> =
-    Presentation.RequestObjectRetrieved.requestObjectRetrieved(this, clock.instant())
+fun Presentation.Requested.retrieveRequestObject(clock: Clock): Either<Throwable, Presentation.RequestObjectRetrieved> =
+    Presentation.RequestObjectRetrieved.requestObjectRetrieved(this, clock.now())
 
-fun Presentation.Requested.timedOut(clock: Clock): Result<Presentation.TimedOut> =
-    Presentation.TimedOut.timeOut(this, clock.instant())
+fun Presentation.Requested.timedOut(clock: Clock): Either<Throwable, Presentation.TimedOut> =
+    Presentation.TimedOut.timeOut(this, clock.now())
 
-fun Presentation.RequestObjectRetrieved.timedOut(clock: Clock): Result<Presentation.TimedOut> =
-    Presentation.TimedOut.timeOut(this, clock.instant())
+fun Presentation.RequestObjectRetrieved.timedOut(clock: Clock): Either<Throwable, Presentation.TimedOut> =
+    Presentation.TimedOut.timeOut(this, clock.now())
 
 fun Presentation.RequestObjectRetrieved.submit(
     clock: Clock,
     walletResponse: WalletResponse,
     responseCode: ResponseCode?,
-): Result<Presentation.Submitted> =
-    Presentation.Submitted.submitted(this, clock.instant(), walletResponse, responseCode)
+): Either<Throwable, Presentation.Submitted> =
+    Presentation.Submitted.submitted(this, clock.now(), walletResponse, responseCode)
 
-fun Presentation.Submitted.timedOut(clock: Clock): Result<Presentation.TimedOut> =
-    Presentation.TimedOut.timeOut(this, clock.instant())
+fun Presentation.Submitted.timedOut(clock: Clock): Either<Throwable, Presentation.TimedOut> =
+    Presentation.TimedOut.timeOut(this, clock.now())

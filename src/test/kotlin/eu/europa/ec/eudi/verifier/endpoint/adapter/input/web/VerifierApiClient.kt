@@ -15,6 +15,7 @@
  */
 package eu.europa.ec.eudi.verifier.endpoint.adapter.input.web
 
+import eu.europa.ec.eudi.verifier.endpoint.adapter.input.web.VerifierApi.Companion.TRANSACTION_ID_HEADER
 import eu.europa.ec.eudi.verifier.endpoint.domain.ResponseCode
 import eu.europa.ec.eudi.verifier.endpoint.domain.TransactionId
 import eu.europa.ec.eudi.verifier.endpoint.port.input.InitTransactionResponse
@@ -48,7 +49,7 @@ object VerifierApiClient {
             Output.QrCode -> MediaType.IMAGE_PNG
         }
 
-        val responseSpec = client.post().uri(VerifierApi.INIT_TRANSACTION_PATH)
+        val responseSpec = client.post().uri(VerifierApi.INIT_TRANSACTION_PATH_V2)
             .contentType(MediaType.APPLICATION_JSON)
             .accept(accept)
             .bodyValue(initTransactionTO)
@@ -61,11 +62,15 @@ object VerifierApiClient {
                     .returnResult()
                     .responseBody!!
             Output.QrCode -> {
-                val qrCode = responseSpec.expectStatus().isOk()
+                val response = responseSpec.expectStatus().isOk()
                     .expectBody<ByteArray>()
                     .returnResult()
-                    .responseBody!!
-                InitTransactionResponse.QrCode(qrCode)
+
+                val qrCode = checkNotNull(response.responseBody)
+                val transactionId = checkNotNull(response.responseHeaders.getFirst(TRANSACTION_ID_HEADER))
+                val authorizationRequestUri = checkNotNull(response.responseHeaders.getFirst(VerifierApi.AUTHORIZATION_REQUEST_URI_HEADER))
+
+                InitTransactionResponse.QrCode(qrCode, transactionId, authorizationRequestUri)
             }
         }
     }

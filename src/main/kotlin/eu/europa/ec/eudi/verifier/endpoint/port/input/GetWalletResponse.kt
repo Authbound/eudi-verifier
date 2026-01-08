@@ -15,7 +15,6 @@
  */
 package eu.europa.ec.eudi.verifier.endpoint.port.input
 
-import eu.europa.ec.eudi.prex.PresentationSubmission
 import eu.europa.ec.eudi.verifier.endpoint.domain.*
 import eu.europa.ec.eudi.verifier.endpoint.port.input.QueryResponse.*
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.LoadPresentationById
@@ -23,11 +22,7 @@ import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.PresentationEven
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.PublishPresentationEvent
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import java.time.Clock
+import kotlinx.serialization.json.*
 
 /**
  * Represent the [WalletResponse] as returned by the wallet
@@ -35,11 +30,9 @@ import java.time.Clock
 @Serializable
 @SerialName("wallet_response")
 data class WalletResponseTO(
-    @SerialName("id_token") val idToken: String? = null,
-    @SerialName("vp_token") val vpToken: JsonElement? = null,
-    @SerialName("presentation_submission") val presentationSubmission: PresentationSubmission? = null,
-    @SerialName("error") val error: String? = null,
-    @SerialName("error_description") val errorDescription: String? = null,
+    @SerialName(OpenId4VPSpec.VP_TOKEN) val vpToken: JsonObject? = null,
+    @SerialName(RFC6749.ERROR) val error: String? = null,
+    @SerialName(RFC6749.ERROR_DESCRIPTION) val errorDescription: String? = null,
 )
 
 internal fun WalletResponse.toTO(): WalletResponseTO {
@@ -49,33 +42,19 @@ internal fun WalletResponse.toTO(): WalletResponseTO {
             is VerifiablePresentation.Json -> value
         }
 
-    fun VpContent.DCQL.toJsonElement(): JsonElement = buildJsonObject {
-        verifiablePresentations.forEach { (key, value) ->
-            put(key.value, value.toJsonElement())
+    fun VerifiablePresentations.toJsonObject(): JsonObject = buildJsonObject {
+        value.forEach { (queryId, verifiablePresentations) ->
+            putJsonArray(queryId.value) {
+                verifiablePresentations.forEach {
+                    add(it.toJsonElement())
+                }
+            }
         }
     }
 
-    fun VpContent.PresentationExchange.toJsonElement(): JsonElement = when {
-        verifiablePresentations.size > 0 -> JsonArray(verifiablePresentations.map { it.toJsonElement() })
-        else -> throw IllegalStateException("No attestations shared from wallet")
-    }
-
-    fun VpContent.toJsonElement(): JsonElement = when (this) {
-        is VpContent.DCQL -> toJsonElement()
-        is VpContent.PresentationExchange -> toJsonElement()
-    }
-
     return when (this) {
-        is WalletResponse.IdToken -> WalletResponseTO(idToken = idToken)
         is WalletResponse.VpToken -> WalletResponseTO(
-            vpToken = vpContent.toJsonElement(),
-            presentationSubmission = vpContent.presentationSubmissionOrNull(),
-        )
-
-        is WalletResponse.IdAndVpToken -> WalletResponseTO(
-            idToken = idToken,
-            vpToken = vpContent.toJsonElement(),
-            presentationSubmission = vpContent.presentationSubmissionOrNull(),
+            vpToken = verifiablePresentations.toJsonObject(),
         )
 
         is WalletResponse.Error -> WalletResponseTO(
@@ -108,7 +87,10 @@ class GetWalletResponseLive(
             null -> NotFound
             is Presentation.Submitted ->
                 when (responseCode) {
-                    presentation.responseCode -> found(presentation)
+                    null,
+                    presentation.responseCode,
+                    -> found(presentation)
+
                     else -> responseCodeMismatch(presentation, responseCode)
                 }
 
@@ -145,7 +127,7 @@ class GetWalletResponseLive(
         presentation: Presentation.Submitted,
         walletResponse: WalletResponseTO,
     ) {
-        val event = PresentationEvent.VerifierGotWalletResponse(presentation.id, clock.instant(), walletResponse)
+        val event = PresentationEvent.VerifierGotWalletResponse(presentation.id, clock.now(), walletResponse)
         publishPresentationEvent(event)
     }
 
@@ -153,7 +135,7 @@ class GetWalletResponseLive(
         presentation: Presentation,
         cause: String,
     ) {
-        val event = PresentationEvent.VerifierFailedToGetWalletResponse(presentation.id, clock.instant(), cause)
+        val event = PresentationEvent.VerifierFailedToGetWalletResponse(presentation.id, clock.now(), cause)
         publishPresentationEvent(event)
     }
 }

@@ -18,15 +18,20 @@ package eu.europa.ec.eudi.verifier.endpoint.adapter.input.web
 import eu.europa.ec.eudi.sdjwt.NimbusSdJwtOps
 import eu.europa.ec.eudi.verifier.endpoint.domain.Nonce
 import eu.europa.ec.eudi.verifier.endpoint.port.input.*
+import org.slf4j.LoggerFactory
 import org.springframework.http.MediaType.APPLICATION_FORM_URLENCODED
 import org.springframework.http.MediaType.APPLICATION_JSON
 import org.springframework.web.reactive.function.server.*
 import org.springframework.web.reactive.function.server.ServerResponse.badRequest
 import org.springframework.web.reactive.function.server.ServerResponse.ok
+import kotlin.collections.firstOrNull
+
+private val log = LoggerFactory.getLogger(UtilityApi::class.java)
 
 internal class UtilityApi(
     private val validateMsoMdocDeviceResponse: ValidateMsoMdocDeviceResponse,
     private val validateSdJwtVc: ValidateSdJwtVc,
+    private val processSdJwtVc: ProcessSdJwtVc,
 ) {
     val route: RouterFunction<ServerResponse> = coRouter {
         POST(
@@ -40,11 +45,14 @@ internal class UtilityApi(
             contentType(APPLICATION_FORM_URLENCODED) and accept(APPLICATION_JSON),
             ::handleValidateSdJwtVc,
         )
+
+        POST(
+            PROCESS_SD_JWT_VC_PATH,
+            contentType(APPLICATION_FORM_URLENCODED) and accept(APPLICATION_JSON),
+            ::handleProcessSdJwtVc,
+        )
     }
 
-    /**
-     * Handles a request to validate an MsoMdoc DeviceResponse.
-     */
     private suspend fun handleValidateMsoMdocDeviceResponse(request: ServerRequest): ServerResponse {
         println("handleValidateMsoMdocDeviceResponse called with request: ${request.awaitFormData()}")
         val form = request.awaitFormData()
@@ -66,9 +74,6 @@ internal class UtilityApi(
         }
     }
 
-    /**
-     * Handles a request to validate an SD-JWT Verifiable Credential.
-     */
     private suspend fun handleValidateSdJwtVc(request: ServerRequest): ServerResponse {
         val form = request.awaitFormData()
         val unverifiedSdJwtVc = form["sd_jwt_vc"]
@@ -87,7 +92,7 @@ internal class UtilityApi(
         return when (val result = validateSdJwtVc(unverifiedSdJwtVc, nonce, issuerChain)) {
             is SdJwtVcValidationResult.Valid -> {
                 val reCreated = with(NimbusSdJwtOps) {
-                    result.payload.sdJwt.recreateClaims(visitor = null)
+                    result.payload.sdJwt.recreateClaimsAndDisclosuresPerClaim().first
                 }
                 ok().json().bodyValueAndAwait(reCreated)
             }
@@ -95,8 +100,27 @@ internal class UtilityApi(
         }
     }
 
+    private suspend fun handleProcessSdJwtVc(request: ServerRequest): ServerResponse {
+        val form = request.awaitFormData()
+        val unprocessedSdJwtVc = form["sd_jwt_vc"]
+            ?.firstOrNull { it.isNotBlank() }
+            .let {
+                requireNotNull(it) { "sd_jwt_vc must be provided" }
+            }
+
+        return processSdJwtVc(unprocessedSdJwtVc)
+            .fold(
+                ifLeft = { error ->
+                    log.warn("Could not process SD-JWT VC payload.", error)
+                    badRequest().buildAndAwait()
+                },
+                ifRight = { ok().json().bodyValueAndAwait(it) },
+            )
+    }
+
     companion object {
         const val VALIDATE_MSO_MDOC_DEVICE_RESPONSE_PATH = "/utilities/validations/msoMdoc/deviceResponse"
         const val VALIDATE_SD_JWT_VC_PATH = "/utilities/validations/sdJwtVc"
+        const val PROCESS_SD_JWT_VC_PATH = "/utilities/process/sdJwtVc"
     }
 }
