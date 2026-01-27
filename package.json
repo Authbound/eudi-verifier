@@ -1,11 +1,12 @@
 {
-  "name": "@authbound/eudi-verifier",
-  "scripts": {
-    "dev": "docker compose -f docker-compose.yaml up",
-    "dev:detached": "docker compose -f docker-compose.yaml up -d",
-    "stop": "docker compose -f docker-compose.yaml down",
-    "build": "docker compose -f docker-compose.yaml build",
-    "logs": "docker compose -f docker-compose.yaml logs -f",
-    "clean": "docker compose -f docker-compose.yaml down -v"
-  }
+    "name": "@authbound/eudi-verifier",
+    "scripts": {
+        "dev": "docker compose --env-file ../../.env -f docker/docker-compose.yaml up --force-recreate",
+        "dev:detached": "docker compose --env-file ../../.env -f docker/docker-compose.yaml up -d --force-recreate",
+        "dev:local": "node ../../scripts/run-eudi-verifier-dev.mjs",
+        "stop": "docker compose -f docker/docker-compose.yaml down",
+        "build": "docker compose -f docker/docker-compose.yaml build",
+        "logs": "docker compose -f docker/docker-compose.yaml logs -f",
+        "clean": "docker compose -f docker/docker-compose.yaml down -v"
+    }
 }

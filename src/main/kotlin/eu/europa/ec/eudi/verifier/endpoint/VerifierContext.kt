@@ -20,6 +20,11 @@ import com.github.benmanes.caffeine.cache.Caffeine
 import com.nimbusds.jose.EncryptionMethod
 import com.nimbusds.jose.JWEAlgorithm
 import com.nimbusds.jose.JWSAlgorithm
+import com.nimbusds.jose.jwk.Curve
+import com.nimbusds.jose.jwk.ECKey
+import com.nimbusds.jose.jwk.JWK
+import com.nimbusds.jose.jwk.KeyUse
+import com.nimbusds.jose.jwk.gen.ECKeyGenerator
 import com.nimbusds.jose.util.Base64
 import com.sksamuel.aedile.core.asCache
 import com.sksamuel.aedile.core.expireAfterWrite
@@ -46,11 +51,13 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DocumentValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.IssuerSignedItemsShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.ValidityInfoShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.persistence.PresentationInMemoryRepo
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.persistence.PresentationRedisRepo
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.presentation.ValidateSdJwtVcOrMsoMdocVerifiablePresentation
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.qrcode.GenerateQrCodeFromData
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.LookupTypeMetadataFromUrl
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.SdJwtVcValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.ValidateJsonSchema
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.security.buildS2sJwtDecoder
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.StatusListTokenValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.ParsePemEncodedX509CertificateChainWithNimbus
 import eu.europa.ec.eudi.verifier.endpoint.domain.*
@@ -76,20 +83,42 @@ import org.springframework.boot.web.codec.CodecCustomizer
 import org.springframework.context.support.BeanDefinitionDsl.BeanSupplierContext
 import org.springframework.context.support.beans
 import org.springframework.core.env.Environment
+import org.springframework.core.env.Profiles
 import org.springframework.core.env.getProperty
 import org.springframework.core.io.DefaultResourceLoader
+import org.springframework.core.io.FileSystemResource
+import org.springframework.http.HttpStatus
+import org.springframework.http.MediaType
+import org.springframework.http.server.reactive.ServerHttpRequest
 import org.springframework.http.codec.json.KotlinSerializationJsonDecoder
 import org.springframework.http.codec.json.KotlinSerializationJsonEncoder
 import org.springframework.security.config.web.server.ServerHttpSecurity
 import org.springframework.security.config.web.server.invoke
+import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder
+import org.springframework.security.web.server.ServerAuthenticationEntryPoint
+import org.springframework.security.web.server.authorization.ServerAccessDeniedHandler
 import org.springframework.web.cors.CorsConfiguration
 import org.springframework.web.cors.reactive.CorsConfigurationSource
+import org.springframework.web.server.ServerWebExchange
+import org.springframework.web.server.WebFilter
+import reactor.core.publisher.Mono
+import reactor.core.publisher.SignalType
 import java.net.URI
 import java.security.KeyStore
+import java.security.cert.X509Certificate
+import java.util.Date
+import java.util.UUID
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 
 private val log = LoggerFactory.getLogger(VerifierApplication::class.java)
+private const val REQUEST_ID_HEADER = "X-Request-Id"
+private const val keystoreDefaultLocation = "/app/keystore.jks"
+
+private enum class SigningKeyEnum {
+    GenerateRandom,
+    LoadFromKeystore,
+}
 
 @OptIn(ExperimentalSerializationApi::class)
 internal fun beans(clock: Clock) = beans {
@@ -106,14 +135,28 @@ internal fun beans(clock: Clock) = beans {
     //
     bean { GenerateTransactionIdNimbus(64) }
     bean { GenerateRequestIdNimbus(64) }
-    with(PresentationInMemoryRepo()) {
-        bean { loadPresentationById }
-        bean { loadPresentationByRequestId }
-        bean { storePresentation }
-        bean { loadIncompletePresentationsOlderThan }
-        bean { loadPresentationEvents }
-        bean { publishPresentationEvent }
-        bean { deletePresentationsInitiatedBefore }
+    val persistenceMode = env.getProperty("verifier.persistence", "redis").lowercase()
+    val cleanupMaxAge = Duration.parse(env.getProperty("verifier.presentations.cleanup.maxAge", "P10D"))
+    val presentationDefinitionByReference = WalletApi.presentationDefinitionByReference(env.publicUrl())
+    if (persistenceMode == "redis") {
+        bean { PresentationRedisRepo(ref(), presentationDefinitionByReference, cleanupMaxAge) }
+        bean { ref<PresentationRedisRepo>().loadPresentationById }
+        bean { ref<PresentationRedisRepo>().loadPresentationByRequestId }
+        bean { ref<PresentationRedisRepo>().storePresentation }
+        bean { ref<PresentationRedisRepo>().loadIncompletePresentationsOlderThan }
+        bean { ref<PresentationRedisRepo>().loadPresentationEvents }
+        bean { ref<PresentationRedisRepo>().publishPresentationEvent }
+        bean { ref<PresentationRedisRepo>().deletePresentationsInitiatedBefore }
+    } else {
+        with(PresentationInMemoryRepo()) {
+            bean { loadPresentationById }
+            bean { loadPresentationByRequestId }
+            bean { storePresentation }
+            bean { loadIncompletePresentationsOlderThan }
+            bean { loadPresentationEvents }
+            bean { publishPresentationEvent }
+            bean { deletePresentationsInitiatedBefore }
+        }
     }
 
     bean {
@@ -170,6 +213,39 @@ internal fun beans(clock: Clock) = beans {
             ref(),
             ref(),
         )
+    }
+
+    bean<WebFilter> {
+        WebFilter { exchange, chain ->
+            val requestId =
+                exchange.request.headers.getFirst(REQUEST_ID_HEADER)
+                    ?.takeIf { it.isNotBlank() }
+                    ?: UUID.randomUUID().toString()
+            val requestWithId = exchange.request.mutate().header(REQUEST_ID_HEADER, requestId).build()
+            val exchangeWithId = exchange.mutate().request(requestWithId).build()
+            exchangeWithId.response.headers.add(REQUEST_ID_HEADER, requestId)
+
+            val startedAt = System.nanoTime()
+            val method = requestWithId.method?.name() ?: "UNKNOWN"
+            val path = requestWithId.uri.path
+            val txId = extractTransactionId(requestWithId)
+
+            chain.filter(exchangeWithId)
+                .doFinally { signal ->
+                    val status = exchangeWithId.response.statusCode?.value()
+                        ?: if (signal == SignalType.ON_ERROR) 500 else 200
+                    val latencyMs = (System.nanoTime() - startedAt) / 1_000_000
+                    log.info(
+                        "http.request method={} path={} status={} latencyMs={} requestId={} tx_id={}",
+                        method,
+                        path,
+                        status,
+                        latencyMs,
+                        requestId,
+                        txId ?: "n/a",
+                    )
+                }
+        }
     }
 
     bean { RetrieveRequestObjectLive(ref(), ref(), ref(), ref(), ref(), ref(), ref()) }
@@ -354,7 +430,7 @@ internal fun beans(clock: Clock) = beans {
     //
     // Config
     //
-    bean { verifierConfig(env) }
+    bean { verifierConfig(env, clock) }
 
     //
     // End points
@@ -393,6 +469,42 @@ internal fun beans(clock: Clock) = beans {
     //
     // Other
     //
+    val s2sEnabled = env.getProperty("verifier.s2s.enabled", Boolean::class.java, true)
+    if (s2sEnabled) {
+        val jwksUrl = env.getRequiredProperty("verifier.s2s.jwks-url")
+        val issuer = env.getRequiredProperty("verifier.s2s.issuer")
+        val audience = env.getRequiredProperty("verifier.s2s.audience")
+        val issuers = env.getOptionalList(
+            name = "verifier.s2s.issuers",
+            filter = { it.isNotBlank() },
+            transform = { it.trim() },
+        )?.all ?: listOf(issuer)
+        val audiences = env.getOptionalList(
+            name = "verifier.s2s.audiences",
+            filter = { it.isNotBlank() },
+            transform = { it.trim() },
+        )?.all ?: listOf(audience)
+        val clockSkewSeconds =
+            env.getProperty("verifier.s2s.clock-skew-seconds", Long::class.java, 60L)
+        log.info(
+            "S2S auth enabled jwksUrl={} issuers={} audiences={} clockSkewSeconds={}",
+            jwksUrl,
+            issuers,
+            audiences,
+            clockSkewSeconds,
+        )
+        bean<ReactiveJwtDecoder> {
+            buildS2sJwtDecoder(
+                jwksUrl = jwksUrl,
+                issuers = issuers.toSet(),
+                audiences = audiences.toSet(),
+                clockSkewSeconds = clockSkewSeconds,
+            )
+        }
+    } else {
+        log.warn("S2S auth disabled for /ui/** routes")
+    }
+
     bean {
         CodecCustomizer {
             val json = Json {
@@ -428,6 +540,29 @@ internal fun beans(clock: Clock) = beans {
                 }
             }
             csrf { disable() } // cross-site request forgery disabled
+
+            authorizeExchange {
+                authorize("/wallet/**", permitAll)
+                authorize("/public/**", permitAll)
+                authorize("/webjars/**", permitAll)
+                authorize("/actuator/**", permitAll)
+                if (s2sEnabled) {
+                    authorize("/ui/**", authenticated)
+                } else {
+                    authorize("/ui/**", permitAll)
+                }
+                authorize(anyExchange, permitAll)
+            }
+
+            if (s2sEnabled) {
+                exceptionHandling {
+                    authenticationEntryPoint = jsonAuthEntryPoint()
+                    accessDeniedHandler = jsonAccessDeniedHandler()
+                }
+                oauth2ResourceServer {
+                    jwt { }
+                }
+            }
         }
     }
 }
@@ -459,35 +594,195 @@ private fun BeanSupplierContext.sdJwtVcValidator(
     typeMetadataPolicy = ref<TypeMetadataPolicy>(),
 )
 
+private fun extractTransactionId(request: ServerHttpRequest): String? {
+    val params = request.queryParams
+    val candidate =
+        params.getFirst("transaction_id")
+            ?: params.getFirst("transactionId")
+            ?: params.getFirst("tx_id")
+    if (!candidate.isNullOrBlank()) {
+        return candidate
+    }
+
+    val path = request.uri.path.trim('/')
+    if (path.isEmpty()) return null
+    val segments = path.split('/')
+    return if (segments.size >= 3 && segments[0] == "ui" && segments[1] == "presentations") {
+        segments[2].ifBlank { null }
+    } else {
+        null
+    }
+}
+
+private fun jsonAuthEntryPoint(): ServerAuthenticationEntryPoint =
+    ServerAuthenticationEntryPoint { exchange, ex ->
+        val request = exchange.request
+        val requestId = request.headers.getFirst(REQUEST_ID_HEADER) ?: "n/a"
+        val authHeader = request.headers.getFirst("Authorization")
+        val authScheme = authHeader?.substringBefore(' ')?.lowercase()
+        log.warn(
+            "s2s.auth.failed method={} path={} status=401 requestId={} tx_id={} authHeaderPresent={} authScheme={} error={}",
+            request.method?.name() ?: "UNKNOWN",
+            request.uri.path,
+            requestId,
+            extractTransactionId(request) ?: "n/a",
+            authHeader != null,
+            authScheme ?: "n/a",
+            ex.message ?: "Invalid token",
+        )
+        jsonError(exchange, HttpStatus.UNAUTHORIZED, "unauthorized", ex.message ?: "Invalid token")
+    }
+
+private fun jsonAccessDeniedHandler(): ServerAccessDeniedHandler =
+    ServerAccessDeniedHandler { exchange, _ ->
+        val request = exchange.request
+        val requestId = request.headers.getFirst(REQUEST_ID_HEADER) ?: "n/a"
+        val authHeader = request.headers.getFirst("Authorization")
+        val authScheme = authHeader?.substringBefore(' ')?.lowercase()
+        log.warn(
+            "s2s.access.denied method={} path={} status=403 requestId={} tx_id={} authHeaderPresent={} authScheme={}",
+            request.method?.name() ?: "UNKNOWN",
+            request.uri.path,
+            requestId,
+            extractTransactionId(request) ?: "n/a",
+            authHeader != null,
+            authScheme ?: "n/a",
+        )
+        jsonError(exchange, HttpStatus.FORBIDDEN, "forbidden", "Access denied")
+    }
+
+private fun jsonError(
+    exchange: ServerWebExchange,
+    status: HttpStatus,
+    code: String,
+    message: String,
+): Mono<Void> {
+    val response = exchange.response
+    response.statusCode = status
+    response.headers.contentType = MediaType.APPLICATION_JSON
+    val body = """{"error":"$code","message":"$message"}"""
+    val buffer = response.bufferFactory().wrap(body.toByteArray())
+    return response.writeWith(Mono.just(buffer))
+}
+
 private enum class EmbedOptionEnum {
     ByValue,
     ByReference,
 }
 
-private fun jarSigningConfig(environment: Environment): SigningConfig {
-    val keystoreLocation = environment.getRequiredProperty("verifier.jar.signing.key.keystore")
-    log.info("Will try to load Keystore from: '{}'", keystoreLocation)
+private fun isProduction(environment: Environment): Boolean =
+    environment.acceptsProfiles(Profiles.of("prod", "production"))
 
-    val keystoreType =
-        environment.getProperty("verifier.jar.signing.key.keystore.type", KeyStore.getDefaultType())
-    val keystorePassword =
-        environment.getProperty("verifier.jar.signing.key.keystore.password")?.takeIf { it.isNotBlank() }
-    val keyStore = loadKeyStore(keystoreLocation, keystoreType, keystorePassword)
+private fun validateKeystoreConfig(environment: Environment) {
+    val keystoreLocation =
+        environment.getProperty("verifier.jar.signing.key.keystore")
+            ?.takeIf { it.isNotBlank() }
+    require(!keystoreLocation.isNullOrBlank()) {
+        "Missing required property 'verifier.jar.signing.key.keystore'"
+    }
 
     val keyAlias =
-        environment.getRequiredProperty("verifier.jar.signing.key.alias")
-    val keyPassword =
-        environment.getProperty("verifier.jar.signing.key.password")?.takeIf { it.isNotBlank() }
-    val key = keyStore.loadJWK(keyAlias, keyPassword)
+        environment.getProperty("verifier.jar.signing.key.alias")
+            ?.takeIf { it.isNotBlank() }
+    require(!keyAlias.isNullOrBlank()) {
+        "Missing required property 'verifier.jar.signing.key.alias'"
+    }
+}
+
+private fun jarSigningConfig(environment: Environment, clock: Clock): SigningConfig {
+    val prod = isProduction(environment)
+    val signingKeyMode =
+        environment.getProperty("verifier.jar.signing.key", SigningKeyEnum::class.java)
+            ?: SigningKeyEnum.GenerateRandom
+
+    if (prod && signingKeyMode == SigningKeyEnum.GenerateRandom) {
+        error(
+            "GenerateRandom JAR signing key is not allowed in production. " +
+                "Set verifier.jar.signing.key=LoadFromKeystore and configure keystore settings."
+        )
+    }
+
+    if (signingKeyMode == SigningKeyEnum.LoadFromKeystore) {
+        validateKeystoreConfig(environment)
+    }
+
+    val key = run {
+        fun loadFromKeystore(): JWK {
+            val keystoreResource = run {
+                val keystoreLocation = environment.getRequiredProperty("verifier.jar.signing.key.keystore")
+                log.info("Will try to load Keystore from: '{}'", keystoreLocation)
+                val configuredResource = DefaultResourceLoader().getResource(keystoreLocation)
+                val resolvedResource = if (configuredResource.exists()) {
+                    configuredResource
+                } else if (!prod) {
+                    log.warn(
+                        "Could not find Keystore at '{}'. Fallback to '{}'",
+                        keystoreLocation,
+                        keystoreDefaultLocation,
+                    )
+                    FileSystemResource(keystoreDefaultLocation)
+                        .takeIf { it.exists() }
+                } else {
+                    null
+                }
+                checkNotNull(resolvedResource) {
+                    "Could not load Keystore at '$keystoreLocation'. " +
+                        "Fallback is disabled in production."
+                }
+                resolvedResource
+            }
+
+            val keystoreType =
+                environment.getProperty("verifier.jar.signing.key.keystore.type", KeyStore.getDefaultType())
+            val keystorePassword =
+                environment.getProperty("verifier.jar.signing.key.keystore.password")?.takeIf { it.isNotBlank() }
+            val keyAlias =
+                environment.getRequiredProperty("verifier.jar.signing.key.alias")
+            val keyPassword =
+                environment.getProperty("verifier.jar.signing.key.password")?.takeIf { it.isNotBlank() }
+
+            return keystoreResource.inputStream.use { inputStream ->
+                val keystore = KeyStore.getInstance(keystoreType)
+                keystore.load(inputStream, keystorePassword?.toCharArray())
+
+                val jwk = JWK.load(keystore, keyAlias, keyPassword?.toCharArray())
+                val chain = keystore.getCertificateChain(keyAlias)
+                    ?.mapNotNull { certificate -> certificate as? X509Certificate }
+                    ?.toNonEmptyListOrNull()
+
+                if (chain != null) {
+                    val encodedChain = chain.map { Base64.encode(it.encoded) }
+                    when (jwk) {
+                        is ECKey -> ECKey.Builder(jwk).x509CertChain(encodedChain).build()
+                        else -> jwk
+                    }
+                } else {
+                    jwk
+                }
+            }
+        }
+
+        fun generateRandom(): ECKey =
+            ECKeyGenerator(Curve.P_256)
+                .keyUse(KeyUse.SIGNATURE)
+                .keyID(UUID.randomUUID().toString())
+                .issueTime(Date.from(clock.instant()))
+                .generate()
+
+        when (signingKeyMode) {
+            SigningKeyEnum.LoadFromKeystore -> loadFromKeystore()
+            SigningKeyEnum.GenerateRandom -> generateRandom()
+        }
+    }
 
     val algorithm = environment.getProperty("verifier.jar.signing.algorithm", "ES256").let(JWSAlgorithm::parse)
     return SigningConfig(key, algorithm)
 }
 
-private fun verifierConfig(environment: Environment): VerifierConfig {
+private fun verifierConfig(environment: Environment, clock: Clock): VerifierConfig {
     val verifierId = run {
         val originalClientId = environment.getProperty("verifier.originalClientId", "verifier")
-        val jarSigning = jarSigningConfig(environment)
+        val jarSigning = jarSigningConfig(environment, clock)
 
         val factory =
             when (val clientIdPrefix = environment.getProperty("verifier.clientIdPrefix", "pre-registered")) {
