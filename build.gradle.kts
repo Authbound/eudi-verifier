@@ -26,10 +26,13 @@ repositories {
 }
 
 dependencies {
+    implementation(platform(libs.kotlin.bom))
+    implementation(platform(libs.kotlinx.coroutines.bom))
+    implementation(platform(libs.ktor.bom))
+    implementation(platform(libs.kotlinx.serialization.bom))
+    implementation(platform(libs.arrow.stack))
     implementation(platform(SpringBootPlugin.BOM_COORDINATES))
-    implementation(platform("org.jetbrains.kotlinx:kotlinx-serialization-bom:${libs.versions.kotlinxSerialization.get()}"))
 
-    implementation("org.springframework.boot:spring-boot-starter-webflux")
     implementation("org.springframework.boot:spring-boot-starter-webflux")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-data-redis-reactive")
@@ -46,15 +49,15 @@ dependencies {
     implementation(libs.arrow.fx.coroutines)
     implementation(libs.arrow.core.serialization)
     implementation("org.springframework.boot:spring-boot-starter-thymeleaf")
-    implementation("org.webjars:webjars-locator-core")
+    implementation("org.webjars:webjars-locator-lite")
     implementation(libs.swagger.ui)
     implementation(libs.waltid.mdoc.credentials) {
         because("To verify CBOR credentials")
     }
-    implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.7.1-0.6.x-compat") {
+    implementation(libs.kotlinx.datetime) {
         because("required by walt.id")
     }
-    implementation("com.augustcellars.cose:cose-java:1.1.0") {
+    implementation(libs.cose.java) {
         because("required by walt.id")
     }
     implementation(libs.sd.jwt)
@@ -82,16 +85,13 @@ dependencies {
     implementation(libs.dss.validation)
     implementation(libs.dss.tsl.validation)
     implementation(libs.dss.utils.apache.commons)
-    implementation(libs.json.schema.validator)
-    implementation(libs.joni) {
-        because("required by json-schema-validator")
-    }
     implementation(libs.aedile)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("io.projectreactor:reactor-test")
+    testImplementation("org.springframework.boot:spring-boot-webtestclient")
 }
 
 java {
@@ -105,7 +105,7 @@ kotlin {
     }
 
     compilerOptions {
-        apiVersion = KotlinVersion.KOTLIN_2_1
+        apiVersion = KotlinVersion.DEFAULT
         freeCompilerArgs.add("-Xjsr305=strict")
         optIn.addAll(
             "kotlinx.serialization.ExperimentalSerializationApi",

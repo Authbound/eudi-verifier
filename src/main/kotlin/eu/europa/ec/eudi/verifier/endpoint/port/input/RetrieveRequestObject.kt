@@ -129,8 +129,19 @@ class RetrieveRequestObjectLive(
                 publishPresentationEvent(event)
             }
 
-            ensure(method is RetrieveRequestObjectMethod.Get || RequestUriMethod.Post == presentation.requestUriMethod) {
-                RetrieveRequestObjectError.InvalidRequestUriMethod(presentation.requestUriMethod)
+            when (method) {
+                is RetrieveRequestObjectMethod.Get -> ensure(
+                    presentation.requestUriMethod == RequestUriMethod.PostOrGet ||
+                        presentation.requestUriMethod == RequestUriMethod.Get,
+                ) {
+                    RetrieveRequestObjectError.InvalidRequestUriMethod(presentation.requestUriMethod)
+                }
+                is RetrieveRequestObjectMethod.Post -> ensure(
+                    presentation.requestUriMethod == RequestUriMethod.PostOrGet ||
+                        presentation.requestUriMethod == RequestUriMethod.Post,
+                ) {
+                    RetrieveRequestObjectError.InvalidRequestUriMethod(presentation.requestUriMethod)
+                }
             }
 
             val walletMetadata = method.walletMetadataOrNull?.let { parseWalletMetadata(it).bind() }
@@ -224,10 +235,12 @@ private class WalletMetadataValidator(private val verifierConfig: VerifierConfig
 
     private fun Raise<RetrieveRequestObjectError>.ensureVerifierSupportsWalletJarSigningAlgorithms(metadata: WalletMetadataTO) {
         val jarSigningAlgorithm = verifierConfig.verifierId.jarSigning.algorithm.name
-        ensure(jarSigningAlgorithm in metadata.signingAlgorithmsSupported.orEmpty()) {
-            RetrieveRequestObjectError.UnsupportedWalletMetadata(
-                "Wallet does not support JAR Signing Algorithms '$jarSigningAlgorithm'",
-            )
+        if (null != metadata.requestObjectSigningAlgorithmsSupported) {
+            ensure(jarSigningAlgorithm in metadata.requestObjectSigningAlgorithmsSupported) {
+                RetrieveRequestObjectError.UnsupportedWalletMetadata(
+                    "Wallet does not support JAR Signing Algorithms '$jarSigningAlgorithm'",
+                )
+            }
         }
     }
 
@@ -262,8 +275,10 @@ private class WalletMetadataValidator(private val verifierConfig: VerifierConfig
         return if (null == jwks) {
             EncryptionRequirement.NotRequired
         } else {
-            val walletSupportedEncryptionAlgorithms = metadata.encryptionAlgorithmsSupported.orEmpty().map { JWEAlgorithm.parse(it) }
-            val walletSupportedEncryptionMethods = metadata.encryptionMethodsSupported.orEmpty().map { EncryptionMethod.parse(it) }
+            val walletSupportedEncryptionAlgorithms = metadata.requestObjectEncryptionAlgorithmsSupported.orEmpty()
+                .map { JWEAlgorithm.parse(it) }
+            val walletSupportedEncryptionMethods = metadata.requestObjectEncryptionMethodsSupported.orEmpty()
+                .map { EncryptionMethod.parse(it) }
 
             EncryptionRequirement.Required.create(
                 jwks.keys,
@@ -299,7 +314,13 @@ private data class WalletMetadataTO(
     val encryptionMethodsSupported: List<String>? = null,
 
     @SerialName(RFC9101.REQUEST_OBJECT_SIGNING_ALGORITHMS_SUPPORTED)
-    val signingAlgorithmsSupported: List<String>? = null,
+    val requestObjectSigningAlgorithmsSupported: List<String>? = null,
+
+    @SerialName(RFC9101.REQUEST_OBJECT_ENCRYPTION_ALG_VALUES_SUPPORTED)
+    val requestObjectEncryptionAlgorithmsSupported: List<String>? = null,
+
+    @SerialName(RFC9101.REQUEST_OBJECT_ENCRYPTION_ENC_VALUES_SUPPORTED)
+    val requestObjectEncryptionMethodsSupported: List<String>? = null,
 
     @Required
     @SerialName(RFC8414.RESPONSE_TYPES_SUPPORTED)

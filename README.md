@@ -30,7 +30,7 @@ Application exposes two APIs
 * [Wallet API](src/main/kotlin/eu/europa/ec/eudi/verifier/endpoint/adapter/input/web/WalletApi.kt)
 
 The Verifier API, supports two operations:
-* [Initialize Transaction](src/main/kotlin/eu/europa/ec/eudi/verifier/endpoint/port/input/InitTransaction.kt), where Verifier may define whether it wants to request a SIOP or OpenID4VP or combined request
+* [Initialize Transaction](src/main/kotlin/eu/europa/ec/eudi/verifier/endpoint/port/input/InitTransaction.kt), where Verifier initializes an OpenID4VP request
 * [Get Wallet response](src/main/kotlin/eu/europa/ec/eudi/verifier/endpoint/port/input/GetWalletResponse.kt), where Verifier receives a `vp_token`, or an error  
 
 An Open API v3 specification of these operations is available [here](src/main/resources/public/openapi.json).
@@ -643,7 +643,12 @@ https://www.iana.org/assignments/jose/jose.xhtml#web-signature-encryption-algori
 Default value: `ES256`
 
 Variable: `VERIFIER_CLIENTMETADATA_VPFORMATS_MSOMDOC_ENABLED`  
-Description: Enable support for MSO MDoc    
+Description: Enable support for MSO MDoc.   
+The supported algorithms are for Issuer data, and MDoc authentication are:
+* -7 (ES256)
+* -35 (ES384)
+* -36 (ES512)
+
 Default value: `true`  
 
 Variable: `VERIFIER_VALIDATION_SDJWTVC_STATUSCHECK_ENABLED`  
@@ -777,10 +782,6 @@ Variable: `VERIFIER_VALIDATION_SDJWTVC_TYPEMETADATA_RESOLUTION_INTEGRITY_ALLOWED
 Description: Comma-separated list of allowed sub-resource integrity hash algorithms  
 Allowed values: `sha256`, `sha384`, `sha512`  
 Default value: `sha256,sha384,sha512`  
-
-Variable: `VERIFIER_VALIDATION_SDJWTVC_TYPEMETADATA_JSONSCHEMA_VALIDATION_ENABLED`  
-Description: Whether Json Schema validation should be enabled or not    
-Default value: `true`   
 
 ## How to contribute
 

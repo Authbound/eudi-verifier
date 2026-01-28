@@ -64,6 +64,9 @@ enum class RequestUriMethodTO {
 
     @SerialName(OpenId4VPSpec.REQUEST_URI_METHOD_POST)
     Post,
+
+    @SerialName("post_get")
+    PostOrGet,
 }
 
 /**
@@ -421,6 +424,7 @@ class InitTransactionLive(
         when (initTransaction.requestUriMethod) {
             RequestUriMethodTO.Get -> RequestUriMethod.Get
             RequestUriMethodTO.Post -> RequestUriMethod.Post
+            RequestUriMethodTO.PostOrGet -> RequestUriMethod.PostOrGet
             null -> verifierConfig.requestUriMethod
         }
 
@@ -524,6 +528,7 @@ private fun RequestUriMethod.toTO(): RequestUriMethodTO =
     when (this) {
         RequestUriMethod.Get -> RequestUriMethodTO.Get
         RequestUriMethod.Post -> RequestUriMethodTO.Post
+        RequestUriMethod.PostOrGet -> RequestUriMethodTO.PostOrGet
     }
 
 private fun <T : Any, U : T> Collection<T>.containsAny(first: U, vararg rest: U): Boolean = first in this || rest.any { it in this }
