@@ -1,17 +1,30 @@
+/*
+ * Copyright (c) 2023 European Commission
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package eu.europa.ec.eudi.verifier.endpoint.adapter.out.persistence
 
 import arrow.core.NonEmptyList
-import arrow.core.nonEmptyListOf
 import arrow.core.toNonEmptyListOrNull
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import com.fasterxml.jackson.module.kotlin.readValue
 import com.nimbusds.jose.proc.BadJOSEException
-import eu.europa.ec.eudi.prex.PresentationDefinition
-import eu.europa.ec.eudi.prex.PresentationSubmission
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.PresentationDefinitionJackson
+import com.nimbusds.jose.jwk.JWK
+import eu.europa.ec.eudi.statium.StatusReference
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.json.jsonSupport
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.utils.getOrThrow
 import eu.europa.ec.eudi.verifier.endpoint.domain.*
-import eu.europa.ec.eudi.verifier.endpoint.port.input.JwtSecuredAuthorizationRequestTO
+import eu.europa.ec.eudi.verifier.endpoint.port.input.InitTransactionResponse
+import eu.europa.ec.eudi.verifier.endpoint.port.input.ProfileTO
 import eu.europa.ec.eudi.verifier.endpoint.port.input.WalletResponseAcceptedTO
 import eu.europa.ec.eudi.verifier.endpoint.port.input.WalletResponseTO
 import eu.europa.ec.eudi.verifier.endpoint.port.input.WalletResponseValidationError
@@ -20,976 +33,744 @@ import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import org.slf4j.LoggerFactory
 import org.springframework.data.domain.Range
-import org.springframework.data.redis.connection.Limit
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate
-import java.time.Duration
-import java.time.Instant
-
-private val logger = LoggerFactory.getLogger(PresentationRedisRepo::class.java)
-private val objectMapper = jacksonObjectMapper()
-
-private val json = Json {
-    ignoreUnknownKeys = true
-    classDiscriminator = "type"
-}
+import java.io.ByteArrayInputStream
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
+import java.util.Base64
+import kotlin.time.Duration
+import kotlin.time.Instant
+import kotlin.time.toJavaDuration
 
 class PresentationRedisRepo(
     private val redis: ReactiveStringRedisTemplate,
-    private val presentationDefinitionByReference: EmbedOption.ByReference<RequestId>,
+    private val clock: Clock,
     private val ttl: Duration,
 ) {
+    private val logger = LoggerFactory.getLogger(PresentationRedisRepo::class.java)
 
     val loadPresentationById: LoadPresentationById by lazy {
-        LoadPresentationById { presentationId ->
-            loadPresentation(presentationId)
+        LoadPresentationById { transactionId ->
+            redis.opsForValue()
+                .get(keys.presentation(transactionId))
+                .awaitSingleOrNull()
+                ?.let { decodePresentation(it) }
         }
     }
 
     val loadPresentationByRequestId: LoadPresentationByRequestId by lazy {
         LoadPresentationByRequestId { requestId ->
-            val txId = redis.opsForValue()
-                .get(requestIndexKey(requestId))
+            val transactionId = redis.opsForValue()
+                .get(keys.requestToTransaction(requestId))
                 .awaitSingleOrNull()
-                ?: return@LoadPresentationByRequestId null
-
-            loadPresentation(TransactionId(txId))
+                ?.let { TransactionId(it) }
+            transactionId?.let { loadPresentationById(it) }
+                ?.takeUnless { it is Presentation.TimedOut }
         }
     }
 
     val loadIncompletePresentationsOlderThan: LoadIncompletePresentationsOlderThan by lazy {
         LoadIncompletePresentationsOlderThan { at ->
-            val cutoff = at.toEpochMilli().toDouble()
             val ids = redis.opsForZSet()
-                .rangeByScore(
-                    indexIncompleteKey(),
-                    Range.closed(Double.NEGATIVE_INFINITY, cutoff),
-                    Limit.unlimited(),
-                )
+                .rangeByScore(keys.incompleteIndex, Range.closed(0.0, at.toEpochMilliseconds().toDouble()))
                 .collectList()
                 .awaitSingle()
-
-            ids.mapNotNull { id -> loadPresentation(TransactionId(id)) }
+            ids.mapNotNull { TransactionId(it) }
+                .mapNotNull { loadPresentationById(it) }
+                .filterNot { it is Presentation.TimedOut }
         }
     }
 
     val storePresentation: StorePresentation by lazy {
         StorePresentation { presentation ->
-            val existing = if (presentation is Presentation.Requested) null else {
-                loadPresentationRecord(presentation.id)
+            val key = keys.presentation(presentation.id)
+            val existing = redis.opsForValue().get(key).awaitSingleOrNull()?.let { decodePresentation(it) }
+            if (!shouldStore(existing, presentation)) {
+                return@StorePresentation
             }
-            val record = presentation.toRecord(existing)
-            val serialized = json.encodeToString(PresentationRecord.serializer(), record)
-            val key = presentationKey(presentation.id)
 
-            redis.opsForValue().set(key, serialized, ttl).awaitSingle()
-            updateIndexes(presentation)
-            updateRequestMapping(presentation, record)
+            val serialized = jsonSupport.encodeToString(PresentationRecord.serializer(), presentation.toRecord())
+            redis.opsForValue().set(key, serialized, ttl.toJavaDuration()).awaitSingle()
+            persistRequestMapping(presentation, existing)
+            persistIndexes(presentation)
+            redis.expire(keys.events(presentation.id), ttl.toJavaDuration()).awaitSingleOrNull()
         }
     }
 
     val loadPresentationEvents: LoadPresentationEvents by lazy {
         LoadPresentationEvents { transactionId ->
-            val key = eventsKey(transactionId)
             val events = redis.opsForList()
-                .range(key, 0, -1)
+                .range(keys.events(transactionId), 0, -1)
                 .collectList()
                 .awaitSingle()
-                .mapNotNull { decodeEvent(it) }
-
-            events.toNonEmptyListOrNull()
+            events.mapNotNull { decodeEvent(it) }.toNonEmptyListOrNull()
         }
     }
 
     val publishPresentationEvent: PublishPresentationEvent by lazy {
         PublishPresentationEvent { event ->
-            log(event)
-            ensurePresentationExists(event.transactionId)
-            val record = event.toRecord()
-            val serialized = json.encodeToString(PresentationEventRecord.serializer(), record)
-            val key = eventsKey(event.transactionId)
-
-            redis.opsForList().rightPush(key, serialized).awaitSingle()
-            redis.expire(key, ttl).awaitSingle()
+            val presentationKey = keys.presentation(event.transactionId)
+            val exists = redis.hasKey(presentationKey).awaitSingle()
+            check(exists) { "Cannot publish event without a presentation" }
+            val key = keys.events(event.transactionId)
+            val payload = jsonSupport.encodeToString(PresentationEventRecord.serializer(), event.toRecord())
+            redis.opsForList().rightPush(key, payload).awaitSingle()
+            redis.expire(key, ttl.toJavaDuration()).awaitSingleOrNull()
         }
     }
 
     val deletePresentationsInitiatedBefore: DeletePresentationsInitiatedBefore by lazy {
         DeletePresentationsInitiatedBefore { at ->
-            val cutoff = at.toEpochMilli().toDouble()
             val ids = redis.opsForZSet()
-                .rangeByScore(
-                    indexInitiatedKey(),
-                    Range.closed(Double.NEGATIVE_INFINITY, cutoff),
-                    Limit.unlimited(),
-                )
+                .rangeByScore(keys.initiatedIndex, Range.closed(0.0, at.toEpochMilliseconds().toDouble()))
                 .collectList()
                 .awaitSingle()
-
-            if (ids.isEmpty()) return@DeletePresentationsInitiatedBefore emptyList()
-
-            ids.forEach { id ->
-                val txId = TransactionId(id)
-                val requestId = redis.opsForValue().get(transactionRequestKey(txId)).awaitSingleOrNull()
-                val keys = buildList<String> {
-                    add(presentationKey(txId))
-                    add(eventsKey(txId))
-                    add(transactionRequestKey(txId))
-                    if (requestId != null) add(requestIndexKey(RequestId(requestId)))
-                }
-                redis.delete(*keys.toTypedArray()).awaitSingle()
+            ids.mapNotNull { id ->
+                val transactionId = TransactionId(id)
+                deletePresentation(transactionId)
+                transactionId
             }
-
-            redis.opsForZSet().remove(indexInitiatedKey(), *ids.toTypedArray()).awaitSingle()
-            redis.opsForZSet().remove(indexIncompleteKey(), *ids.toTypedArray()).awaitSingle()
-
-            ids.map { TransactionId(it) }
         }
     }
 
-    private suspend fun loadPresentationRecord(presentationId: TransactionId): PresentationRecord? {
-        val key = presentationKey(presentationId)
-        val payload = redis.opsForValue().get(key).awaitSingleOrNull() ?: return null
-        return json.decodeFromString(PresentationRecord.serializer(), payload)
+    private suspend fun persistRequestMapping(presentation: Presentation, existing: Presentation?) {
+        val requestId = presentation.requestIdOrNull()
+        val currentRequestId = existing?.requestIdOrNull()
+        val requestKey = requestId ?: currentRequestId
+
+        if (presentation is Presentation.TimedOut && requestKey != null) {
+            redis.opsForValue().delete(keys.requestToTransaction(requestKey)).awaitSingleOrNull()
+            redis.opsForValue().delete(keys.transactionToRequest(presentation.id)).awaitSingleOrNull()
+            return
+        }
+
+        if (requestId != null) {
+            redis.opsForValue()
+                .set(keys.requestToTransaction(requestId), presentation.id.value, ttl.toJavaDuration())
+                .awaitSingle()
+            redis.opsForValue()
+                .set(keys.transactionToRequest(presentation.id), requestId.value, ttl.toJavaDuration())
+                .awaitSingle()
+        }
     }
 
-    private suspend fun loadPresentation(presentationId: TransactionId): Presentation? {
-        val record = loadPresentationRecord(presentationId) ?: return null
-        return record.toDomain(presentationDefinitionByReference)
-    }
-
-    private suspend fun updateIndexes(presentation: Presentation) {
-        val id = presentation.id.value
+    private suspend fun persistIndexes(presentation: Presentation) {
+        val initiatedAt = presentation.initiatedAt.toEpochMilliseconds().toDouble()
         redis.opsForZSet()
-            .add(indexInitiatedKey(), id, presentation.initiatedAt.toEpochMilli().toDouble())
-            .awaitSingle()
+            .add(keys.initiatedIndex, presentation.id.value, initiatedAt)
+            .awaitSingleOrNull()
 
-        val incompleteScore = presentation.incompleteScore()
-        if (incompleteScore == null) {
-            redis.opsForZSet().remove(indexIncompleteKey(), id).awaitSingle()
-        } else {
-            redis.opsForZSet().add(indexIncompleteKey(), id, incompleteScore).awaitSingle()
+        if (presentation is Presentation.TimedOut || presentation is Presentation.Submitted) {
+            redis.opsForZSet().remove(keys.incompleteIndex, presentation.id.value).awaitSingleOrNull()
+            return
         }
+
+        val checkpoint = presentation.expiryCheckpoint().toEpochMilliseconds().toDouble()
+        redis.opsForZSet()
+            .add(keys.incompleteIndex, presentation.id.value, checkpoint)
+            .awaitSingleOrNull()
     }
 
-    private suspend fun updateRequestMapping(presentation: Presentation, record: PresentationRecord) {
-        val requestId = presentation.requestIdOrNull() ?: RequestId(record.requestId)
-
-        redis.opsForValue()
-            .set(requestIndexKey(requestId), presentation.id.value, ttl)
-            .awaitSingle()
-        redis.opsForValue()
-            .set(transactionRequestKey(presentation.id), requestId.value, ttl)
-            .awaitSingle()
-    }
-
-    private suspend fun ensurePresentationExists(transactionId: TransactionId) {
-        val exists = redis.hasKey(presentationKey(transactionId)).awaitSingle()
-        check(exists) { "Cannot publish event without a presentation" }
-    }
-
-    private fun decodeEvent(payload: String): PresentationEvent? = runCatching {
-        val record = json.decodeFromString(PresentationEventRecord.serializer(), payload)
-        record.toDomain()
-    }.getOrNull()
-
-    private fun presentationKey(transactionId: TransactionId) = "eudi:presentation:${transactionId.value}"
-
-    private fun requestIndexKey(requestId: RequestId) = "eudi:presentation:request:${requestId.value}"
-
-    private fun transactionRequestKey(transactionId: TransactionId) =
-        "eudi:presentation:tx:${transactionId.value}:request"
-
-    private fun eventsKey(transactionId: TransactionId) = "eudi:presentation:events:${transactionId.value}"
-
-    private fun indexInitiatedKey() = "eudi:presentation:index:initiated"
-
-    private fun indexIncompleteKey() = "eudi:presentation:index:incomplete"
-}
-
-private fun Presentation.requestIdOrNull(): RequestId? = when (this) {
-    is Presentation.Requested -> requestId
-    is Presentation.RequestObjectRetrieved -> requestId
-    is Presentation.Submitted -> requestId
-    is Presentation.TimedOut -> null
-}
-
-private fun Presentation.incompleteScore(): Double? = when (this) {
-    is Presentation.Requested -> initiatedAt.toEpochMilli().toDouble()
-    is Presentation.RequestObjectRetrieved -> requestObjectRetrievedAt.toEpochMilli().toDouble()
-    is Presentation.Submitted -> initiatedAt.toEpochMilli().toDouble()
-    is Presentation.TimedOut -> null
-}
-
-@Serializable
-private data class PresentationRecord(
-    val id: String,
-    val initiatedAt: Long,
-    val type: PresentationTypeRecord,
-    val requestId: String,
-    val requestUriMethod: String,
-    val nonce: String,
-    val jarmEncryptionEphemeralKey: String?,
-    val responseMode: String,
-    val presentationDefinitionMode: String,
-    val getWalletResponseMethod: WalletResponseMethodRecord,
-    val state: PresentationStateRecord,
-)
-
-private fun Presentation.toRecord(existing: PresentationRecord? = null): PresentationRecord {
-    val baseRequestId = requestIdOrNull()?.value ?: existing?.requestId
-    val baseRequestUriMethod = when (this) {
-        is Presentation.Requested -> requestUriMethod.name
-        else -> existing?.requestUriMethod
-    }
-    val baseNonce = when (this) {
-        is Presentation.Requested -> nonce.value
-        is Presentation.RequestObjectRetrieved -> nonce.value
-        is Presentation.Submitted -> nonce.value
-        is Presentation.TimedOut -> existing?.nonce
-    }
-    val baseJarmKey = when (this) {
-        is Presentation.Requested -> jarmEncryptionEphemeralKey?.value
-        is Presentation.RequestObjectRetrieved -> ephemeralEcPrivateKey?.value
-        else -> existing?.jarmEncryptionEphemeralKey
-    }
-    val baseResponseMode = when (this) {
-        is Presentation.Requested -> responseMode.name
-        is Presentation.RequestObjectRetrieved -> responseMode.name
-        else -> existing?.responseMode
-    }
-    val basePresentationDefinitionMode = when (this) {
-        is Presentation.Requested -> when (presentationDefinitionMode) {
-            is EmbedOption.ByReference -> "by_reference"
-            is EmbedOption.ByValue -> "by_value"
+    private suspend fun deletePresentation(transactionId: TransactionId) {
+        val requestId = redis.opsForValue().get(keys.transactionToRequest(transactionId)).awaitSingleOrNull()
+        if (requestId != null) {
+            redis.opsForValue().delete(keys.requestToTransaction(RequestId(requestId))).awaitSingleOrNull()
         }
-        else -> existing?.presentationDefinitionMode
+        redis.opsForValue().delete(keys.transactionToRequest(transactionId)).awaitSingleOrNull()
+        redis.opsForValue().delete(keys.presentation(transactionId)).awaitSingleOrNull()
+        redis.delete(keys.events(transactionId)).awaitSingleOrNull()
+        redis.opsForZSet().remove(keys.initiatedIndex, transactionId.value).awaitSingleOrNull()
+        redis.opsForZSet().remove(keys.incompleteIndex, transactionId.value).awaitSingleOrNull()
     }
-    val baseWalletResponseMethod = when (this) {
-        is Presentation.Requested -> getWalletResponseMethod.toRecord()
-        is Presentation.RequestObjectRetrieved -> getWalletResponseMethod.toRecord()
-        else -> existing?.getWalletResponseMethod
-    }
 
-    requireNotNull(baseRequestId) { "Missing requestId for presentation ${id.value}" }
-    requireNotNull(baseRequestUriMethod) { "Missing requestUriMethod for presentation ${id.value}" }
-    requireNotNull(baseNonce) { "Missing nonce for presentation ${id.value}" }
-    requireNotNull(baseResponseMode) { "Missing responseMode for presentation ${id.value}" }
-    requireNotNull(basePresentationDefinitionMode) { "Missing presentationDefinitionMode for presentation ${id.value}" }
-    requireNotNull(baseWalletResponseMethod) { "Missing wallet response method for presentation ${id.value}" }
-
-    return PresentationRecord(
-        id = id.value,
-        initiatedAt = initiatedAt.toEpochMilli(),
-        type = type.toRecord(),
-        requestId = baseRequestId,
-        requestUriMethod = baseRequestUriMethod,
-        nonce = baseNonce,
-        jarmEncryptionEphemeralKey = baseJarmKey,
-        responseMode = baseResponseMode,
-        presentationDefinitionMode = basePresentationDefinitionMode,
-        getWalletResponseMethod = baseWalletResponseMethod,
-        state = toStateRecord(),
-    )
-}
-
-private fun Presentation.toStateRecord(): PresentationStateRecord = when (this) {
-    is Presentation.Requested -> PresentationStateRecord.Requested
-    is Presentation.RequestObjectRetrieved -> PresentationStateRecord.RequestObjectRetrieved(
-        requestObjectRetrievedAt = requestObjectRetrievedAt.toEpochMilli(),
-        ephemeralEcPrivateKey = ephemeralEcPrivateKey?.value,
-    )
-    is Presentation.Submitted -> PresentationStateRecord.Submitted(
-        requestObjectRetrievedAt = requestObjectRetrievedAt.toEpochMilli(),
-        submittedAt = submittedAt.toEpochMilli(),
-        walletResponse = walletResponse.toRecord(),
-        responseCode = responseCode?.value,
-    )
-    is Presentation.TimedOut -> PresentationStateRecord.TimedOut(
-        requestObjectRetrievedAt = requestObjectRetrievedAt?.toEpochMilli(),
-        submittedAt = submittedAt?.toEpochMilli(),
-        timedOutAt = timedOutAt.toEpochMilli(),
-    )
-}
-
-private fun PresentationRecord.toDomain(
-    presentationDefinitionByReference: EmbedOption.ByReference<RequestId>,
-): Presentation {
-    val requested = Presentation.Requested(
-        id = TransactionId(id),
-        initiatedAt = Instant.ofEpochMilli(initiatedAt),
-        type = type.toDomain(),
-        requestId = RequestId(requestId),
-        requestUriMethod = RequestUriMethod.valueOf(requestUriMethod),
-        nonce = Nonce(nonce),
-        jarmEncryptionEphemeralKey = jarmEncryptionEphemeralKey?.let { EphemeralEncryptionKeyPairJWK(it) },
-        responseMode = ResponseModeOption.valueOf(responseMode),
-        presentationDefinitionMode = when (presentationDefinitionMode) {
-            "by_reference" -> presentationDefinitionByReference
-            else -> EmbedOption.ByValue
-        },
-        getWalletResponseMethod = getWalletResponseMethod.toDomain(),
-    )
-
-    return when (val stored = state) {
-        is PresentationStateRecord.Requested -> requested
-        is PresentationStateRecord.RequestObjectRetrieved ->
-            Presentation.RequestObjectRetrieved.requestObjectRetrieved(
-                requested,
-                Instant.ofEpochMilli(stored.requestObjectRetrievedAt),
-            ).getOrThrow()
-        is PresentationStateRecord.Submitted -> {
-            val retrieved = Presentation.RequestObjectRetrieved.requestObjectRetrieved(
-                requested,
-                Instant.ofEpochMilli(stored.requestObjectRetrievedAt),
-            ).getOrThrow()
-            Presentation.Submitted.submitted(
-                retrieved,
-                Instant.ofEpochMilli(stored.submittedAt),
-                stored.walletResponse.toDomain(),
-                stored.responseCode?.let { ResponseCode(it) },
-            ).getOrThrow()
+    private fun shouldStore(existing: Presentation?, next: Presentation): Boolean {
+        if (existing == null) return true
+        if (existing.isTerminal() && !next.isTerminal()) {
+            logger.info("Skipping presentation update for tx={} because existing state is terminal", existing.id.value)
+            return false
         }
-        is PresentationStateRecord.TimedOut -> {
-            val timedOutAt = Instant.ofEpochMilli(stored.timedOutAt)
-            when {
-                stored.submittedAt != null -> {
-                    val retrieved = Presentation.RequestObjectRetrieved.requestObjectRetrieved(
-                        requested,
-                        Instant.ofEpochMilli(stored.requestObjectRetrievedAt ?: initiatedAt),
-                    ).getOrThrow()
-                    val submitted = Presentation.Submitted.submitted(
-                        retrieved,
-                        Instant.ofEpochMilli(stored.submittedAt),
-                        WalletResponse.Error("timed_out", "Presentation timed out"),
-                        null,
-                    ).getOrThrow()
-                    Presentation.TimedOut.timeOut(submitted, timedOutAt).getOrThrow()
-                }
-                stored.requestObjectRetrievedAt != null -> {
-                    val retrieved = Presentation.RequestObjectRetrieved.requestObjectRetrieved(
-                        requested,
-                        Instant.ofEpochMilli(stored.requestObjectRetrievedAt),
-                    ).getOrThrow()
-                    Presentation.TimedOut.timeOut(retrieved, timedOutAt).getOrThrow()
-                }
-                else -> Presentation.TimedOut.timeOut(requested, timedOutAt).getOrThrow()
-            }
+        if (existing.isTerminal() && next.isTerminal()) {
+            return false
         }
+        return true
     }
-}
 
-@Serializable
-private sealed class PresentationStateRecord {
+    private fun decodePresentation(serialized: String): Presentation =
+        jsonSupport.decodeFromString(PresentationRecord.serializer(), serialized).toDomain()
+
+    private fun decodeEvent(serialized: String): PresentationEvent =
+        jsonSupport.decodeFromString(PresentationEventRecord.serializer(), serialized).toDomain()
+
+    private fun Presentation.requestIdOrNull(): RequestId? = when (this) {
+        is Presentation.Requested -> requestId
+        is Presentation.RequestObjectRetrieved -> requestId
+        is Presentation.Submitted -> requestId
+        is Presentation.TimedOut -> null
+    }
+
+    private fun Presentation.expiryCheckpoint(): Instant = when (this) {
+        is Presentation.Requested -> initiatedAt
+        is Presentation.RequestObjectRetrieved -> requestObjectRetrievedAt
+        is Presentation.Submitted -> initiatedAt
+        is Presentation.TimedOut -> initiatedAt
+    }
+
+    private fun Presentation.isTerminal(): Boolean = this is Presentation.Submitted || this is Presentation.TimedOut
+
+    private object keys {
+        const val initiatedIndex: String = "eudi:presentation:index:initiated"
+        const val incompleteIndex: String = "eudi:presentation:index:incomplete"
+
+        fun presentation(transactionId: TransactionId) = "eudi:presentation:${transactionId.value}"
+        fun events(transactionId: TransactionId) = "eudi:presentation:events:${transactionId.value}"
+        fun requestToTransaction(requestId: RequestId) = "eudi:presentation:request:${requestId.value}"
+        fun transactionToRequest(transactionId: TransactionId) = "eudi:presentation:tx:${transactionId.value}:request"
+    }
+
+    @Serializable
+    private sealed interface PresentationRecord {
+        val id: String
+        val initiatedAt: Long
+    }
+
     @Serializable
     @SerialName("requested")
-    data object Requested : PresentationStateRecord()
+    private data class RequestedRecord(
+        override val id: String,
+        override val initiatedAt: Long,
+        val query: DCQL,
+        val transactionData: List<String>?,
+        val requestId: String,
+        val requestUriMethod: String,
+        val nonce: String,
+        val responseMode: ResponseModeRecord,
+        val getWalletResponseMethod: GetWalletResponseMethodRecord,
+        val issuerChain: List<String>?,
+        val profile: ProfileRecord,
+    ) : PresentationRecord
 
     @Serializable
     @SerialName("request_object_retrieved")
-    data class RequestObjectRetrieved(
+    private data class RequestObjectRetrievedRecord(
+        override val id: String,
+        override val initiatedAt: Long,
+        val query: DCQL,
+        val transactionData: List<String>?,
+        val requestId: String,
         val requestObjectRetrievedAt: Long,
-        val ephemeralEcPrivateKey: String?,
-    ) : PresentationStateRecord()
+        val nonce: String,
+        val responseMode: ResponseModeRecord,
+        val getWalletResponseMethod: GetWalletResponseMethodRecord,
+        val issuerChain: List<String>?,
+        val profile: ProfileRecord,
+    ) : PresentationRecord
 
     @Serializable
     @SerialName("submitted")
-    data class Submitted(
+    private data class SubmittedRecord(
+        override val id: String,
+        override val initiatedAt: Long,
+        val requestId: String,
         val requestObjectRetrievedAt: Long,
         val submittedAt: Long,
         val walletResponse: WalletResponseRecord,
+        val nonce: String,
         val responseCode: String?,
-    ) : PresentationStateRecord()
+        val getWalletResponseMethod: GetWalletResponseMethodRecord,
+    ) : PresentationRecord
 
     @Serializable
     @SerialName("timed_out")
-    data class TimedOut(
-        val requestObjectRetrievedAt: Long? = null,
-        val submittedAt: Long? = null,
+    private data class TimedOutRecord(
+        override val id: String,
+        override val initiatedAt: Long,
+        val requestObjectRetrievedAt: Long?,
+        val submittedAt: Long?,
         val timedOutAt: Long,
-    ) : PresentationStateRecord()
-}
+    ) : PresentationRecord
 
-@Serializable
-private sealed class WalletResponseMethodRecord {
+    @Serializable
+    private sealed interface ResponseModeRecord {
+    }
+
+    @Serializable
+    @SerialName("direct_post")
+    private object DirectPostRecord : ResponseModeRecord
+
+    @Serializable
+    @SerialName("direct_post_jwt")
+    private data class DirectPostJwtRecord(
+        val jwkJson: String,
+    ) : ResponseModeRecord
+
+    @Serializable
+    private sealed interface GetWalletResponseMethodRecord {
+    }
+
     @Serializable
     @SerialName("poll")
-    data object Poll : WalletResponseMethodRecord()
+    private object PollRecord : GetWalletResponseMethodRecord
 
     @Serializable
     @SerialName("redirect")
-    data class Redirect(val template: String) : WalletResponseMethodRecord()
-}
+    private data class RedirectRecord(
+        val redirectUriTemplate: String,
+    ) : GetWalletResponseMethodRecord
 
-private fun GetWalletResponseMethod.toRecord(): WalletResponseMethodRecord = when (this) {
-    is GetWalletResponseMethod.Poll -> WalletResponseMethodRecord.Poll
-    is GetWalletResponseMethod.Redirect -> WalletResponseMethodRecord.Redirect(redirectUriTemplate)
-}
-
-private fun WalletResponseMethodRecord.toDomain(): GetWalletResponseMethod = when (this) {
-    is WalletResponseMethodRecord.Poll -> GetWalletResponseMethod.Poll
-    is WalletResponseMethodRecord.Redirect -> GetWalletResponseMethod.Redirect(template)
-}
-
-@Serializable
-private sealed class PresentationTypeRecord {
     @Serializable
-    @SerialName("id_token")
-    data class IdTokenRequest(val idTokenTypes: List<String>) : PresentationTypeRecord()
+    private sealed interface WalletResponseRecord
 
     @Serializable
     @SerialName("vp_token")
-    data class VpTokenRequest(
-        val presentationQuery: PresentationQueryRecord,
-        val transactionData: List<JsonObject>? = null,
-    ) : PresentationTypeRecord()
-
-    @Serializable
-    @SerialName("id_vp_token")
-    data class IdAndVpToken(
-        val idTokenTypes: List<String>,
-        val presentationQuery: PresentationQueryRecord,
-        val transactionData: List<JsonObject>? = null,
-    ) : PresentationTypeRecord()
-}
-
-private fun PresentationType.toRecord(): PresentationTypeRecord = when (this) {
-    is PresentationType.IdTokenRequest -> PresentationTypeRecord.IdTokenRequest(
-        idTokenTypes = idTokenType.map { it.name },
-    )
-    is PresentationType.VpTokenRequest -> PresentationTypeRecord.VpTokenRequest(
-        presentationQuery = presentationQuery.toRecord(),
-        transactionData = transactionData?.map { it.value },
-    )
-    is PresentationType.IdAndVpToken -> PresentationTypeRecord.IdAndVpToken(
-        idTokenTypes = idTokenType.map { it.name },
-        presentationQuery = presentationQuery.toRecord(),
-        transactionData = transactionData?.map { it.value },
-    )
-}
-
-private fun PresentationTypeRecord.toDomain(): PresentationType {
-    fun List<JsonObject>?.toTransactionData(): NonEmptyList<TransactionData>? =
-        this?.mapNotNull { jsonObject ->
-            val credentialIds = jsonObject["credential_ids"]?.jsonArray?.mapNotNull { element ->
-                (element as? JsonPrimitive)?.contentOrNull
-            } ?: emptyList()
-            TransactionData.validate(jsonObject, credentialIds).getOrNull()
-        }?.toNonEmptyListOrNull()
-
-    return when (this) {
-        is PresentationTypeRecord.IdTokenRequest -> PresentationType.IdTokenRequest(
-            idTokenType = idTokenTypes.map { IdTokenType.valueOf(it) },
-        )
-        is PresentationTypeRecord.VpTokenRequest -> PresentationType.VpTokenRequest(
-            presentationQuery = presentationQuery.toDomain(),
-            transactionData = transactionData.toTransactionData(),
-        )
-        is PresentationTypeRecord.IdAndVpToken -> PresentationType.IdAndVpToken(
-            idTokenType = idTokenTypes.map { IdTokenType.valueOf(it) },
-            presentationQuery = presentationQuery.toDomain(),
-            transactionData = transactionData.toTransactionData(),
-        )
-    }
-}
-
-@Serializable
-private sealed class PresentationQueryRecord {
-    @Serializable
-    @SerialName("presentation_definition")
-    data class PresentationDefinitionQuery(val presentationDefinition: String) : PresentationQueryRecord()
-
-    @Serializable
-    @SerialName("dcql")
-    data class DcqlQuery(val dcql: JsonObject) : PresentationQueryRecord()
-}
-
-private fun PresentationQuery.toRecord(): PresentationQueryRecord = when (this) {
-    is PresentationQuery.ByPresentationDefinition -> PresentationQueryRecord.PresentationDefinitionQuery(
-        presentationDefinition = presentationDefinitionToJson(presentationDefinition),
-    )
-    is PresentationQuery.ByDigitalCredentialsQueryLanguage -> PresentationQueryRecord.DcqlQuery(
-        dcql = jsonSupport.encodeToJsonElement(DCQL.serializer(), query).jsonObject,
-    )
-}
-
-private fun PresentationQueryRecord.toDomain(): PresentationQuery = when (this) {
-    is PresentationQueryRecord.PresentationDefinitionQuery -> PresentationQuery.ByPresentationDefinition(
-        presentationDefinition = presentationDefinitionFromJson(presentationDefinition),
-    )
-    is PresentationQueryRecord.DcqlQuery -> PresentationQuery.ByDigitalCredentialsQueryLanguage(
-        query = jsonSupport.decodeFromJsonElement(DCQL.serializer(), dcql),
-    )
-}
-
-private fun presentationDefinitionToJson(presentationDefinition: PresentationDefinition): String {
-    val jsonObject = PresentationDefinitionJackson.toJsonObject(presentationDefinition)
-    return objectMapper.writeValueAsString(jsonObject)
-}
-
-private fun presentationDefinitionFromJson(payload: String): PresentationDefinition {
-    val map = objectMapper.readValue<Map<String, Any?>>(payload)
-    return PresentationDefinitionJackson.fromJsonObject(map).getOrThrow()
-}
-
-@Serializable
-private sealed class WalletResponseRecord {
-    @Serializable
-    @SerialName("id_token")
-    data class IdToken(val idToken: String) : WalletResponseRecord()
-
-    @Serializable
-    @SerialName("vp_token")
-    data class VpToken(val vpContent: VpContentRecord) : WalletResponseRecord()
-
-    @Serializable
-    @SerialName("id_vp_token")
-    data class IdAndVpToken(val idToken: String, val vpContent: VpContentRecord) : WalletResponseRecord()
+    private data class VpTokenRecord(
+        val verifiablePresentations: Map<String, List<VerifiablePresentationRecord>>,
+    ) : WalletResponseRecord
 
     @Serializable
     @SerialName("error")
-    data class Error(val error: String, val description: String?) : WalletResponseRecord()
-}
-
-private fun WalletResponse.toRecord(): WalletResponseRecord = when (this) {
-    is WalletResponse.IdToken -> WalletResponseRecord.IdToken(idToken)
-    is WalletResponse.VpToken -> WalletResponseRecord.VpToken(vpContent.toRecord())
-    is WalletResponse.IdAndVpToken -> WalletResponseRecord.IdAndVpToken(idToken, vpContent.toRecord())
-    is WalletResponse.Error -> WalletResponseRecord.Error(value, description)
-}
-
-private fun WalletResponseRecord.toDomain(): WalletResponse = when (this) {
-    is WalletResponseRecord.IdToken -> WalletResponse.IdToken(idToken)
-    is WalletResponseRecord.VpToken -> WalletResponse.VpToken(vpContent.toDomain())
-    is WalletResponseRecord.IdAndVpToken -> WalletResponse.IdAndVpToken(idToken, vpContent.toDomain())
-    is WalletResponseRecord.Error -> WalletResponse.Error(error, description)
-}
-
-@Serializable
-private sealed class VpContentRecord {
-    @Serializable
-    @SerialName("presentation_exchange")
-    data class PresentationExchange(
-        val verifiablePresentations: List<VerifiablePresentationRecord>,
-        val presentationSubmission: JsonObject,
-    ) : VpContentRecord()
+    private data class ErrorRecord(
+        val value: String,
+        val description: String?,
+    ) : WalletResponseRecord
 
     @Serializable
-    @SerialName("dcql")
-    data class Dcql(
-        val verifiablePresentations: Map<String, VerifiablePresentationRecord>,
-    ) : VpContentRecord()
-}
-
-private fun VpContent.toRecord(): VpContentRecord = when (this) {
-    is VpContent.PresentationExchange -> VpContentRecord.PresentationExchange(
-        verifiablePresentations = verifiablePresentations.map { it.toRecord() },
-        presentationSubmission = jsonSupport.encodeToJsonElement(PresentationSubmission.serializer(), presentationSubmission)
-            .jsonObject,
+    private data class VerifiablePresentationRecord(
+        val format: Format,
+        val value: JsonElement,
     )
-    is VpContent.DCQL -> VpContentRecord.Dcql(
-        verifiablePresentations = verifiablePresentations.mapKeys { it.key.value }.mapValues { it.value.toRecord() },
-    )
-}
 
-private fun VpContentRecord.toDomain(): VpContent = when (this) {
-    is VpContentRecord.PresentationExchange -> {
-        val presentations = verifiablePresentations.map { it.toDomain() }.toNonEmptyListOrNull()
-            ?: throw IllegalStateException("vp_token must contain at least one presentation")
-        val submission = jsonSupport.decodeFromJsonElement(PresentationSubmission.serializer(), presentationSubmission)
-        VpContent.PresentationExchange(presentations, submission)
+    @Serializable
+    private sealed interface ProfileRecord {
     }
-    is VpContentRecord.Dcql -> {
-        val presentations = verifiablePresentations.mapKeys { QueryId(it.key) }.mapValues { it.value.toDomain() }
-        VpContent.DCQL(presentations)
+
+    @Serializable
+    @SerialName("openid4vp")
+    private object OpenId4VpProfileRecord : ProfileRecord
+
+    @Serializable
+    @SerialName("haip")
+    private object HaipProfileRecord : ProfileRecord
+
+    @Serializable
+    private sealed interface PresentationEventRecord {
+        val transactionId: String
+        val timestamp: Long
     }
-}
-
-@Serializable
-private data class VerifiablePresentationRecord(
-    val format: String,
-    val value: JsonElement,
-)
-
-private fun VerifiablePresentation.toRecord(): VerifiablePresentationRecord = when (this) {
-    is VerifiablePresentation.Str -> VerifiablePresentationRecord(format.value, JsonPrimitive(value))
-    is VerifiablePresentation.Json -> VerifiablePresentationRecord(format.value, value)
-}
-
-private fun VerifiablePresentationRecord.toDomain(): VerifiablePresentation {
-    val format = Format(format)
-    return when (value) {
-        is JsonObject -> VerifiablePresentation.Json(value, format)
-        is JsonPrimitive -> VerifiablePresentation.Str(value.content, format)
-        else -> VerifiablePresentation.Json(value.jsonObject, format)
-    }
-}
-
-@Serializable
-private sealed class PresentationEventRecord {
-    abstract val transactionId: String
-    abstract val timestamp: Long
 
     @Serializable
     @SerialName("transaction_initialized")
-    data class TransactionInitialized(
+    private data class TransactionInitializedRecord(
         override val transactionId: String,
         override val timestamp: Long,
-        val response: JwtSecuredAuthorizationRequestTO,
-    ) : PresentationEventRecord()
+        val response: InitTransactionResponse.JwtSecuredAuthorizationRequestTO,
+        val profile: ProfileTO,
+    ) : PresentationEventRecord
 
     @Serializable
     @SerialName("request_object_retrieved")
-    data class RequestObjectRetrieved(
+    private data class RequestObjectRetrievedEventRecord(
         override val transactionId: String,
         override val timestamp: Long,
-        val jwt: String,
-    ) : PresentationEventRecord()
+        val jwt: Jwt,
+    ) : PresentationEventRecord
 
     @Serializable
     @SerialName("failed_to_retrieve_request_object")
-    data class FailedToRetrieveRequestObject(
+    private data class FailedToRetrieveRequestObjectRecord(
         override val transactionId: String,
         override val timestamp: Long,
         val cause: String,
-    ) : PresentationEventRecord()
-
-    @Serializable
-    @SerialName("presentation_definition_retrieved")
-    data class PresentationDefinitionRetrieved(
-        override val transactionId: String,
-        override val timestamp: Long,
-        val presentationDefinition: String,
-    ) : PresentationEventRecord()
-
-    @Serializable
-    @SerialName("jarm_jwk_set_retrieved")
-    data class JarmJwkSetRetrieved(
-        override val transactionId: String,
-        override val timestamp: Long,
-        val jwkSet: JsonElement,
-    ) : PresentationEventRecord()
-
-    @Serializable
-    @SerialName("failed_to_retrieve_jarm_jwk_set")
-    data class FailedToRetrieveJarmJwkSet(
-        override val transactionId: String,
-        override val timestamp: Long,
-        val cause: String,
-    ) : PresentationEventRecord()
+    ) : PresentationEventRecord
 
     @Serializable
     @SerialName("failed_to_retrieve_presentation_definition")
-    data class FailedToRetrievePresentationDefinition(
+    private data class FailedToRetrievePresentationDefinitionRecord(
         override val transactionId: String,
         override val timestamp: Long,
         val cause: String,
-    ) : PresentationEventRecord()
+    ) : PresentationEventRecord
 
     @Serializable
     @SerialName("wallet_response_posted")
-    data class WalletResponsePosted(
+    private data class WalletResponsePostedRecord(
         override val transactionId: String,
         override val timestamp: Long,
         val walletResponse: WalletResponseTO,
         val verifierEndpointResponse: WalletResponseAcceptedTO?,
-    ) : PresentationEventRecord()
+    ) : PresentationEventRecord
 
     @Serializable
     @SerialName("wallet_failed_to_post_response")
-    data class WalletFailedToPostResponse(
+    private data class WalletFailedToPostResponseRecord(
         override val transactionId: String,
         override val timestamp: Long,
         val cause: WalletResponseValidationErrorRecord,
-    ) : PresentationEventRecord()
+    ) : PresentationEventRecord
 
     @Serializable
     @SerialName("verifier_got_wallet_response")
-    data class VerifierGotWalletResponse(
+    private data class VerifierGotWalletResponseRecord(
         override val transactionId: String,
         override val timestamp: Long,
         val walletResponse: WalletResponseTO,
-    ) : PresentationEventRecord()
+    ) : PresentationEventRecord
 
     @Serializable
     @SerialName("verifier_failed_to_get_wallet_response")
-    data class VerifierFailedToGetWalletResponse(
+    private data class VerifierFailedToGetWalletResponseRecord(
         override val transactionId: String,
         override val timestamp: Long,
         val cause: String,
-    ) : PresentationEventRecord()
+    ) : PresentationEventRecord
 
     @Serializable
     @SerialName("presentation_expired")
-    data class PresentationExpired(
+    private data class PresentationExpiredRecord(
         override val transactionId: String,
         override val timestamp: Long,
-    ) : PresentationEventRecord()
-}
+    ) : PresentationEventRecord
 
-private fun PresentationEvent.toRecord(): PresentationEventRecord = when (this) {
-    is PresentationEvent.TransactionInitialized -> PresentationEventRecord.TransactionInitialized(
-        transactionId.value,
-        timestamp.toEpochMilli(),
-        response,
-    )
-    is PresentationEvent.RequestObjectRetrieved -> PresentationEventRecord.RequestObjectRetrieved(
-        transactionId.value,
-        timestamp.toEpochMilli(),
-        jwt,
-    )
-    is PresentationEvent.FailedToRetrieveRequestObject -> PresentationEventRecord.FailedToRetrieveRequestObject(
-        transactionId.value,
-        timestamp.toEpochMilli(),
-        cause,
-    )
-    is PresentationEvent.PresentationDefinitionRetrieved -> PresentationEventRecord.PresentationDefinitionRetrieved(
-        transactionId.value,
-        timestamp.toEpochMilli(),
-        presentationDefinitionToJson(presentationDefinition),
-    )
-    is PresentationEvent.JarmJwkSetRetrieved -> PresentationEventRecord.JarmJwkSetRetrieved(
-        transactionId.value,
-        timestamp.toEpochMilli(),
-        jwkSet,
-    )
-    is PresentationEvent.FailedToRetrieveJarmJwkSet -> PresentationEventRecord.FailedToRetrieveJarmJwkSet(
-        transactionId.value,
-        timestamp.toEpochMilli(),
-        cause,
-    )
-    is PresentationEvent.FailedToRetrievePresentationDefinition -> PresentationEventRecord.FailedToRetrievePresentationDefinition(
-        transactionId.value,
-        timestamp.toEpochMilli(),
-        cause,
-    )
-    is PresentationEvent.WalletResponsePosted -> PresentationEventRecord.WalletResponsePosted(
-        transactionId.value,
-        timestamp.toEpochMilli(),
-        walletResponse,
-        verifierEndpointResponse,
-    )
-    is PresentationEvent.WalletFailedToPostResponse -> PresentationEventRecord.WalletFailedToPostResponse(
-        transactionId.value,
-        timestamp.toEpochMilli(),
-        cause.toRecord(),
-    )
-    is PresentationEvent.VerifierGotWalletResponse -> PresentationEventRecord.VerifierGotWalletResponse(
-        transactionId.value,
-        timestamp.toEpochMilli(),
-        walletResponse,
-    )
-    is PresentationEvent.VerifierFailedToGetWalletResponse -> PresentationEventRecord.VerifierFailedToGetWalletResponse(
-        transactionId.value,
-        timestamp.toEpochMilli(),
-        cause,
-    )
-    is PresentationEvent.PresentationExpired -> PresentationEventRecord.PresentationExpired(
-        transactionId.value,
-        timestamp.toEpochMilli(),
-    )
-}
-
-private fun PresentationEventRecord.toDomain(): PresentationEvent = when (this) {
-    is PresentationEventRecord.TransactionInitialized -> PresentationEvent.TransactionInitialized(
-        TransactionId(transactionId),
-        Instant.ofEpochMilli(timestamp),
-        response,
-    )
-    is PresentationEventRecord.RequestObjectRetrieved -> PresentationEvent.RequestObjectRetrieved(
-        TransactionId(transactionId),
-        Instant.ofEpochMilli(timestamp),
-        jwt,
-    )
-    is PresentationEventRecord.FailedToRetrieveRequestObject -> PresentationEvent.FailedToRetrieveRequestObject(
-        TransactionId(transactionId),
-        Instant.ofEpochMilli(timestamp),
-        cause,
-    )
-    is PresentationEventRecord.PresentationDefinitionRetrieved -> PresentationEvent.PresentationDefinitionRetrieved(
-        TransactionId(transactionId),
-        Instant.ofEpochMilli(timestamp),
-        presentationDefinitionFromJson(presentationDefinition),
-    )
-    is PresentationEventRecord.JarmJwkSetRetrieved -> PresentationEvent.JarmJwkSetRetrieved(
-        TransactionId(transactionId),
-        Instant.ofEpochMilli(timestamp),
-        jwkSet,
-    )
-    is PresentationEventRecord.FailedToRetrieveJarmJwkSet -> PresentationEvent.FailedToRetrieveJarmJwkSet(
-        TransactionId(transactionId),
-        Instant.ofEpochMilli(timestamp),
-        cause,
-    )
-    is PresentationEventRecord.FailedToRetrievePresentationDefinition -> PresentationEvent.FailedToRetrievePresentationDefinition(
-        TransactionId(transactionId),
-        Instant.ofEpochMilli(timestamp),
-        cause,
-    )
-    is PresentationEventRecord.WalletResponsePosted -> PresentationEvent.WalletResponsePosted(
-        TransactionId(transactionId),
-        Instant.ofEpochMilli(timestamp),
-        walletResponse,
-        verifierEndpointResponse,
-    )
-    is PresentationEventRecord.WalletFailedToPostResponse -> PresentationEvent.WalletFailedToPostResponse(
-        TransactionId(transactionId),
-        Instant.ofEpochMilli(timestamp),
-        cause.toDomain(),
-    )
-    is PresentationEventRecord.VerifierGotWalletResponse -> PresentationEvent.VerifierGotWalletResponse(
-        TransactionId(transactionId),
-        Instant.ofEpochMilli(timestamp),
-        walletResponse,
-    )
-    is PresentationEventRecord.VerifierFailedToGetWalletResponse -> PresentationEvent.VerifierFailedToGetWalletResponse(
-        TransactionId(transactionId),
-        Instant.ofEpochMilli(timestamp),
-        cause,
-    )
-    is PresentationEventRecord.PresentationExpired -> PresentationEvent.PresentationExpired(
-        TransactionId(transactionId),
-        Instant.ofEpochMilli(timestamp),
-    )
-}
-
-@Serializable
-private sealed class WalletResponseValidationErrorRecord {
     @Serializable
-    @SerialName("missing_state")
-    data object MissingState : WalletResponseValidationErrorRecord()
+    @SerialName("attestation_status_check_success")
+    private data class AttestationStatusCheckSuccessfulRecord(
+        override val transactionId: String,
+        override val timestamp: Long,
+        val statusReference: StatusReference,
+    ) : PresentationEventRecord
+
+    @Serializable
+    @SerialName("attestation_status_check_failed")
+    private data class AttestationStatusCheckFailedRecord(
+        override val transactionId: String,
+        override val timestamp: Long,
+        val statusReference: StatusReference?,
+        val cause: String?,
+    ) : PresentationEventRecord
+
+    @Serializable
+    private sealed interface WalletResponseValidationErrorRecord
 
     @Serializable
     @SerialName("presentation_not_found")
-    data object PresentationNotFound : WalletResponseValidationErrorRecord()
+    private data object PresentationNotFoundRecord : WalletResponseValidationErrorRecord
 
     @Serializable
     @SerialName("unexpected_response_mode")
-    data class UnexpectedResponseMode(
+    private data class UnexpectedResponseModeRecord(
         val requestId: String,
         val expected: String,
         val actual: String,
-    ) : WalletResponseValidationErrorRecord()
+    ) : WalletResponseValidationErrorRecord
 
     @Serializable
     @SerialName("presentation_not_in_expected_state")
-    data object PresentationNotInExpectedState : WalletResponseValidationErrorRecord()
+    private data object PresentationNotInExpectedStateRecord : WalletResponseValidationErrorRecord
 
     @Serializable
     @SerialName("incorrect_state")
-    data object IncorrectState : WalletResponseValidationErrorRecord()
-
-    @Serializable
-    @SerialName("missing_id_token")
-    data object MissingIdToken : WalletResponseValidationErrorRecord()
+    private data object IncorrectStateRecord : WalletResponseValidationErrorRecord
 
     @Serializable
     @SerialName("invalid_vp_token")
-    data object InvalidVpToken : WalletResponseValidationErrorRecord()
+    private data class InvalidVpTokenRecord(
+        val message: String,
+        val cause: String?,
+    ) : WalletResponseValidationErrorRecord
 
     @Serializable
     @SerialName("missing_vp_token")
-    data object MissingVpToken : WalletResponseValidationErrorRecord()
-
-    @Serializable
-    @SerialName("missing_presentation_submission")
-    data object MissingPresentationSubmission : WalletResponseValidationErrorRecord()
-
-    @Serializable
-    @SerialName("presentation_submission_must_not_be_present")
-    data object PresentationSubmissionMustNotBePresent : WalletResponseValidationErrorRecord()
+    private data object MissingVpTokenRecord : WalletResponseValidationErrorRecord
 
     @Serializable
     @SerialName("required_credential_set_not_satisfied")
-    data object RequiredCredentialSetNotSatisfied : WalletResponseValidationErrorRecord()
+    private data object RequiredCredentialSetNotSatisfiedRecord : WalletResponseValidationErrorRecord
 
     @Serializable
     @SerialName("invalid_presentation_submission")
-    data object InvalidPresentationSubmission : WalletResponseValidationErrorRecord()
+    private data object InvalidPresentationSubmissionRecord : WalletResponseValidationErrorRecord
 
     @Serializable
-    @SerialName("invalid_jarm")
-    data class InvalidJarm(val message: String?) : WalletResponseValidationErrorRecord()
-}
+    @SerialName("invalid_encrypted_response")
+    private data class InvalidEncryptedResponseRecord(
+        val message: String,
+    ) : WalletResponseValidationErrorRecord
 
-private fun WalletResponseValidationError.toRecord(): WalletResponseValidationErrorRecord = when (this) {
-    WalletResponseValidationError.MissingState -> WalletResponseValidationErrorRecord.MissingState
-    WalletResponseValidationError.PresentationNotFound -> WalletResponseValidationErrorRecord.PresentationNotFound
-    is WalletResponseValidationError.UnexpectedResponseMode -> WalletResponseValidationErrorRecord.UnexpectedResponseMode(
-        requestId = requestId.value,
-        expected = expected.name,
-        actual = actual.name,
-    )
-    WalletResponseValidationError.PresentationNotInExpectedState ->
-        WalletResponseValidationErrorRecord.PresentationNotInExpectedState
-    WalletResponseValidationError.IncorrectState -> WalletResponseValidationErrorRecord.IncorrectState
-    WalletResponseValidationError.MissingIdToken -> WalletResponseValidationErrorRecord.MissingIdToken
-    WalletResponseValidationError.InvalidVpToken -> WalletResponseValidationErrorRecord.InvalidVpToken
-    WalletResponseValidationError.MissingVpToken -> WalletResponseValidationErrorRecord.MissingVpToken
-    WalletResponseValidationError.MissingPresentationSubmission ->
-        WalletResponseValidationErrorRecord.MissingPresentationSubmission
-    WalletResponseValidationError.PresentationSubmissionMustNotBePresent ->
-        WalletResponseValidationErrorRecord.PresentationSubmissionMustNotBePresent
-    WalletResponseValidationError.RequiredCredentialSetNotSatisfied ->
-        WalletResponseValidationErrorRecord.RequiredCredentialSetNotSatisfied
-    WalletResponseValidationError.InvalidPresentationSubmission ->
-        WalletResponseValidationErrorRecord.InvalidPresentationSubmission
-    is WalletResponseValidationError.InvalidJarm -> WalletResponseValidationErrorRecord.InvalidJarm(error.message)
-}
+    @Serializable
+    @SerialName("haip_device_response_multi_mdoc")
+    private data object DeviceResponseContainsMoreThanOneMDocRecord : WalletResponseValidationErrorRecord
 
-private fun WalletResponseValidationErrorRecord.toDomain(): WalletResponseValidationError = when (this) {
-    WalletResponseValidationErrorRecord.MissingState -> WalletResponseValidationError.MissingState
-    WalletResponseValidationErrorRecord.PresentationNotFound -> WalletResponseValidationError.PresentationNotFound
-    is WalletResponseValidationErrorRecord.UnexpectedResponseMode ->
-        WalletResponseValidationError.UnexpectedResponseMode(
+    @Serializable
+    @SerialName("haip_unsupported_mso_revocation")
+    private data class UnsupportedMsoRevocationMechanismRecord(
+        val used: Set<String>,
+        val allowed: Set<String>,
+    ) : WalletResponseValidationErrorRecord
+
+    @Serializable
+    @SerialName("haip_sdjwt_token_status_required")
+    private data object SdJwtVcMustUseTokenStatusListRecord : WalletResponseValidationErrorRecord
+
+    private fun Presentation.toRecord(): PresentationRecord = when (this) {
+        is Presentation.Requested -> RequestedRecord(
+            id = id.value,
+            initiatedAt = initiatedAt.toEpochMilliseconds(),
+            query = query,
+            transactionData = transactionData?.map { it.base64Url },
+            requestId = requestId.value,
+            requestUriMethod = requestUriMethod.name,
+            nonce = nonce.value,
+            responseMode = responseMode.toRecord(),
+            getWalletResponseMethod = getWalletResponseMethod.toRecord(),
+            issuerChain = issuerChain?.let { encodeIssuerChain(it) },
+            profile = profile.toRecord(),
+        )
+        is Presentation.RequestObjectRetrieved -> RequestObjectRetrievedRecord(
+            id = id.value,
+            initiatedAt = initiatedAt.toEpochMilliseconds(),
+            query = query,
+            transactionData = transactionData?.map { it.base64Url },
+            requestId = requestId.value,
+            requestObjectRetrievedAt = requestObjectRetrievedAt.toEpochMilliseconds(),
+            nonce = nonce.value,
+            responseMode = responseMode.toRecord(),
+            getWalletResponseMethod = getWalletResponseMethod.toRecord(),
+            issuerChain = issuerChain?.let { encodeIssuerChain(it) },
+            profile = profile.toRecord(),
+        )
+        is Presentation.Submitted -> SubmittedRecord(
+            id = id.value,
+            initiatedAt = initiatedAt.toEpochMilliseconds(),
+            requestId = requestId.value,
+            requestObjectRetrievedAt = requestObjectRetrievedAt.toEpochMilliseconds(),
+            submittedAt = submittedAt.toEpochMilliseconds(),
+            walletResponse = walletResponse.toRecord(),
+            nonce = nonce.value,
+            responseCode = responseCode?.value,
+            getWalletResponseMethod = getWalletResponseMethod.toRecord(),
+        )
+        is Presentation.TimedOut -> TimedOutRecord(
+            id = id.value,
+            initiatedAt = initiatedAt.toEpochMilliseconds(),
+            requestObjectRetrievedAt = requestObjectRetrievedAt?.toEpochMilliseconds(),
+            submittedAt = submittedAt?.toEpochMilliseconds(),
+            timedOutAt = timedOutAt.toEpochMilliseconds(),
+        )
+    }
+
+    private fun PresentationRecord.toDomain(): Presentation = when (this) {
+        is RequestedRecord -> Presentation.Requested(
+            id = TransactionId(id),
+            initiatedAt = Instant.fromEpochMilliseconds(initiatedAt),
+            query = query,
+            transactionData = transactionData?.map { TransactionData.fromBase64Url(it).getOrThrow() }?.toNonEmptyListOrNull(),
             requestId = RequestId(requestId),
-            expected = ResponseModeOption.valueOf(expected),
-            actual = ResponseModeOption.valueOf(actual),
+            requestUriMethod = RequestUriMethod.valueOf(requestUriMethod),
+            nonce = Nonce(nonce),
+            responseMode = responseMode.toDomain(),
+            getWalletResponseMethod = getWalletResponseMethod.toDomain(),
+            issuerChain = issuerChain?.let { decodeIssuerChain(it) },
+            profile = profile.toDomain(),
         )
-    WalletResponseValidationErrorRecord.PresentationNotInExpectedState ->
-        WalletResponseValidationError.PresentationNotInExpectedState
-    WalletResponseValidationErrorRecord.IncorrectState -> WalletResponseValidationError.IncorrectState
-    WalletResponseValidationErrorRecord.MissingIdToken -> WalletResponseValidationError.MissingIdToken
-    WalletResponseValidationErrorRecord.InvalidVpToken -> WalletResponseValidationError.InvalidVpToken
-    WalletResponseValidationErrorRecord.MissingVpToken -> WalletResponseValidationError.MissingVpToken
-    WalletResponseValidationErrorRecord.MissingPresentationSubmission ->
-        WalletResponseValidationError.MissingPresentationSubmission
-    WalletResponseValidationErrorRecord.PresentationSubmissionMustNotBePresent ->
-        WalletResponseValidationError.PresentationSubmissionMustNotBePresent
-    WalletResponseValidationErrorRecord.RequiredCredentialSetNotSatisfied ->
-        WalletResponseValidationError.RequiredCredentialSetNotSatisfied
-    WalletResponseValidationErrorRecord.InvalidPresentationSubmission ->
-        WalletResponseValidationError.InvalidPresentationSubmission
-    is WalletResponseValidationErrorRecord.InvalidJarm ->
-        WalletResponseValidationError.InvalidJarm(BadJOSEException(message ?: "Invalid JARM"))
-}
+        is RequestObjectRetrievedRecord -> Presentation.RequestObjectRetrieved.restore(
+            id = TransactionId(id),
+            initiatedAt = Instant.fromEpochMilliseconds(initiatedAt),
+            query = query,
+            transactionData = transactionData?.map { TransactionData.fromBase64Url(it).getOrThrow() }?.toNonEmptyListOrNull(),
+            requestId = RequestId(requestId),
+            requestObjectRetrievedAt = Instant.fromEpochMilliseconds(requestObjectRetrievedAt),
+            nonce = Nonce(nonce),
+            responseMode = responseMode.toDomain(),
+            getWalletResponseMethod = getWalletResponseMethod.toDomain(),
+            issuerChain = issuerChain?.let { decodeIssuerChain(it) },
+            profile = profile.toDomain(),
+        )
+        is SubmittedRecord -> Presentation.Submitted.restore(
+            id = TransactionId(id),
+            initiatedAt = Instant.fromEpochMilliseconds(initiatedAt),
+            requestId = RequestId(requestId),
+            requestObjectRetrievedAt = Instant.fromEpochMilliseconds(requestObjectRetrievedAt),
+            submittedAt = Instant.fromEpochMilliseconds(submittedAt),
+            walletResponse = walletResponse.toDomain(),
+            nonce = Nonce(nonce),
+            responseCode = responseCode?.let { ResponseCode(it) },
+            getWalletResponseMethod = getWalletResponseMethod.toDomain(),
+        )
+        is TimedOutRecord -> Presentation.TimedOut.restore(
+            id = TransactionId(id),
+            initiatedAt = Instant.fromEpochMilliseconds(initiatedAt),
+            requestObjectRetrievedAt = requestObjectRetrievedAt?.let { Instant.fromEpochMilliseconds(it) },
+            submittedAt = submittedAt?.let { Instant.fromEpochMilliseconds(it) },
+            timedOutAt = Instant.fromEpochMilliseconds(timedOutAt),
+        )
+    }
 
-private fun log(e: PresentationEvent) {
-    fun txt(s: String) = "$s - tx: ${e.transactionId.value}"
-    fun warn(s: String) = logger.warn(txt(s))
-    fun info(s: String) = logger.info(txt(s))
-    when (e) {
-        is PresentationEvent.VerifierFailedToGetWalletResponse -> warn("Verifier failed to retrieve wallet response. Cause ${e.cause}")
-        is PresentationEvent.FailedToRetrieveJarmJwkSet -> warn("Wallet failed to retrieve JARM JWKS. Cause ${e.cause}")
-        is PresentationEvent.FailedToRetrievePresentationDefinition -> warn(
-            "Wallet failed to retrieve presentation definition. Cause ${e.cause}",
+    private fun ResponseMode.toRecord(): ResponseModeRecord = when (this) {
+        ResponseMode.DirectPost -> DirectPostRecord
+        is ResponseMode.DirectPostJwt -> DirectPostJwtRecord(jwkJson = ephemeralResponseEncryptionKey.toJSONString())
+    }
+
+    private fun ResponseModeRecord.toDomain(): ResponseMode = when (this) {
+        is DirectPostRecord -> ResponseMode.DirectPost
+        is DirectPostJwtRecord -> ResponseMode.DirectPostJwt(JWK.parse(jwkJson))
+    }
+
+    private fun GetWalletResponseMethod.toRecord(): GetWalletResponseMethodRecord = when (this) {
+        GetWalletResponseMethod.Poll -> PollRecord
+        is GetWalletResponseMethod.Redirect -> RedirectRecord(redirectUriTemplate)
+    }
+
+    private fun GetWalletResponseMethodRecord.toDomain(): GetWalletResponseMethod = when (this) {
+        is PollRecord -> GetWalletResponseMethod.Poll
+        is RedirectRecord -> GetWalletResponseMethod.Redirect(redirectUriTemplate)
+    }
+
+    private fun WalletResponse.toRecord(): WalletResponseRecord = when (this) {
+        is WalletResponse.VpToken -> VpTokenRecord(
+            verifiablePresentations = verifiablePresentations.value.mapKeys { it.key.value }
+                .mapValues { (_, presentations) -> presentations.map { it.toRecord() } },
         )
-        is PresentationEvent.WalletFailedToPostResponse -> warn("Wallet failed to post response. Cause ${e.cause}")
-        is PresentationEvent.FailedToRetrieveRequestObject -> warn("Wallet failed to retrieve request object. Cause ${e.cause}")
-        is PresentationEvent.PresentationExpired -> info("Presentation expired")
-        is PresentationEvent.JarmJwkSetRetrieved -> info("Wallet retrieved JARM JWKS")
-        is PresentationEvent.PresentationDefinitionRetrieved -> info("Wallet retrieved presentation definition")
-        is PresentationEvent.RequestObjectRetrieved -> info("Wallet retrieved Request Object")
-        is PresentationEvent.TransactionInitialized -> info("Verifier initialized transaction")
-        is PresentationEvent.VerifierGotWalletResponse -> info("Verifier retrieved wallet response")
-        is PresentationEvent.WalletResponsePosted -> info("Wallet posted response")
+        is WalletResponse.Error -> ErrorRecord(value, description)
+    }
+
+    private fun WalletResponseRecord.toDomain(): WalletResponse = when (this) {
+        is VpTokenRecord -> WalletResponse.VpToken(
+            VerifiablePresentations(
+                verifiablePresentations.mapKeys { QueryId(it.key) }
+                    .mapValues { (_, list) -> list.map { it.toDomain() } },
+            ),
+        )
+        is ErrorRecord -> WalletResponse.Error(value, description)
+    }
+
+    private fun VerifiablePresentation.toRecord(): VerifiablePresentationRecord =
+        when (this) {
+            is VerifiablePresentation.Str -> VerifiablePresentationRecord(format, JsonPrimitive(value))
+            is VerifiablePresentation.Json -> VerifiablePresentationRecord(format, value)
+        }
+
+    private fun VerifiablePresentationRecord.toDomain(): VerifiablePresentation =
+        when (value) {
+            is JsonPrimitive -> VerifiablePresentation.Str(value.content, format)
+            else -> VerifiablePresentation.Json(value.jsonObject, format)
+        }
+
+    private fun Profile.toRecord(): ProfileRecord = when (this) {
+        Profile.OpenId4VP -> OpenId4VpProfileRecord
+        Profile.HAIP -> HaipProfileRecord
+    }
+
+    private fun ProfileRecord.toDomain(): Profile = when (this) {
+        is OpenId4VpProfileRecord -> Profile.OpenId4VP
+        is HaipProfileRecord -> Profile.HAIP
+    }
+
+    private fun PresentationEvent.toRecord(): PresentationEventRecord = when (this) {
+        is PresentationEvent.TransactionInitialized ->
+            TransactionInitializedRecord(transactionId.value, timestamp.toEpochMilliseconds(), response, profile)
+        is PresentationEvent.RequestObjectRetrieved ->
+            RequestObjectRetrievedEventRecord(transactionId.value, timestamp.toEpochMilliseconds(), jwt)
+        is PresentationEvent.FailedToRetrieveRequestObject ->
+            FailedToRetrieveRequestObjectRecord(transactionId.value, timestamp.toEpochMilliseconds(), cause)
+        is PresentationEvent.FailedToRetrievePresentationDefinition ->
+            FailedToRetrievePresentationDefinitionRecord(transactionId.value, timestamp.toEpochMilliseconds(), cause)
+        is PresentationEvent.WalletResponsePosted ->
+            WalletResponsePostedRecord(transactionId.value, timestamp.toEpochMilliseconds(), walletResponse, verifierEndpointResponse)
+        is PresentationEvent.WalletFailedToPostResponse ->
+            WalletFailedToPostResponseRecord(transactionId.value, timestamp.toEpochMilliseconds(), cause.toRecord())
+        is PresentationEvent.VerifierGotWalletResponse ->
+            VerifierGotWalletResponseRecord(transactionId.value, timestamp.toEpochMilliseconds(), walletResponse)
+        is PresentationEvent.VerifierFailedToGetWalletResponse ->
+            VerifierFailedToGetWalletResponseRecord(transactionId.value, timestamp.toEpochMilliseconds(), cause)
+        is PresentationEvent.PresentationExpired ->
+            PresentationExpiredRecord(transactionId.value, timestamp.toEpochMilliseconds())
+        is PresentationEvent.AttestationStatusCheckSuccessful ->
+            AttestationStatusCheckSuccessfulRecord(transactionId.value, timestamp.toEpochMilliseconds(), statusReference)
+        is PresentationEvent.AttestationStatusCheckFailed ->
+            AttestationStatusCheckFailedRecord(transactionId.value, timestamp.toEpochMilliseconds(), statusReference, cause)
+    }
+
+    private fun PresentationEventRecord.toDomain(): PresentationEvent = when (this) {
+        is TransactionInitializedRecord ->
+            PresentationEvent.TransactionInitialized(TransactionId(transactionId), Instant.fromEpochMilliseconds(timestamp), response, profile)
+        is RequestObjectRetrievedEventRecord ->
+            PresentationEvent.RequestObjectRetrieved(TransactionId(transactionId), Instant.fromEpochMilliseconds(timestamp), jwt)
+        is FailedToRetrieveRequestObjectRecord ->
+            PresentationEvent.FailedToRetrieveRequestObject(TransactionId(transactionId), Instant.fromEpochMilliseconds(timestamp), cause)
+        is FailedToRetrievePresentationDefinitionRecord ->
+            PresentationEvent.FailedToRetrievePresentationDefinition(TransactionId(transactionId), Instant.fromEpochMilliseconds(timestamp), cause)
+        is WalletResponsePostedRecord ->
+            PresentationEvent.WalletResponsePosted(TransactionId(transactionId), Instant.fromEpochMilliseconds(timestamp), walletResponse, verifierEndpointResponse)
+        is WalletFailedToPostResponseRecord ->
+            PresentationEvent.WalletFailedToPostResponse(TransactionId(transactionId), Instant.fromEpochMilliseconds(timestamp), cause.toDomain())
+        is VerifierGotWalletResponseRecord ->
+            PresentationEvent.VerifierGotWalletResponse(TransactionId(transactionId), Instant.fromEpochMilliseconds(timestamp), walletResponse)
+        is VerifierFailedToGetWalletResponseRecord ->
+            PresentationEvent.VerifierFailedToGetWalletResponse(TransactionId(transactionId), Instant.fromEpochMilliseconds(timestamp), cause)
+        is PresentationExpiredRecord ->
+            PresentationEvent.PresentationExpired(TransactionId(transactionId), Instant.fromEpochMilliseconds(timestamp))
+        is AttestationStatusCheckSuccessfulRecord ->
+            PresentationEvent.AttestationStatusCheckSuccessful(TransactionId(transactionId), Instant.fromEpochMilliseconds(timestamp), statusReference)
+        is AttestationStatusCheckFailedRecord ->
+            PresentationEvent.AttestationStatusCheckFailed(TransactionId(transactionId), Instant.fromEpochMilliseconds(timestamp), statusReference, cause)
+    }
+
+    private fun WalletResponseValidationError.toRecord(): WalletResponseValidationErrorRecord = when (this) {
+        WalletResponseValidationError.PresentationNotFound -> PresentationNotFoundRecord
+        is WalletResponseValidationError.UnexpectedResponseMode ->
+            UnexpectedResponseModeRecord(requestId.value, expected.name, actual.name)
+        WalletResponseValidationError.PresentationNotInExpectedState -> PresentationNotInExpectedStateRecord
+        WalletResponseValidationError.IncorrectState -> IncorrectStateRecord
+        is WalletResponseValidationError.InvalidVpToken ->
+            InvalidVpTokenRecord(message, cause?.message)
+        WalletResponseValidationError.MissingVpToken -> MissingVpTokenRecord
+        WalletResponseValidationError.RequiredCredentialSetNotSatisfied -> RequiredCredentialSetNotSatisfiedRecord
+        WalletResponseValidationError.InvalidPresentationSubmission -> InvalidPresentationSubmissionRecord
+        is WalletResponseValidationError.InvalidEncryptedResponse ->
+            InvalidEncryptedResponseRecord(error.message ?: "Invalid encrypted response")
+        WalletResponseValidationError.HAIPValidationError.DeviceResponseContainsMoreThanOneMDoc ->
+            DeviceResponseContainsMoreThanOneMDocRecord
+        is WalletResponseValidationError.HAIPValidationError.UnsupportedMsoRevocationMechanism ->
+            UnsupportedMsoRevocationMechanismRecord(used, allowed)
+        WalletResponseValidationError.HAIPValidationError.SdJwtVcMustUseTokenStatusList ->
+            SdJwtVcMustUseTokenStatusListRecord
+    }
+
+    private fun WalletResponseValidationErrorRecord.toDomain(): WalletResponseValidationError = when (this) {
+        PresentationNotFoundRecord -> WalletResponseValidationError.PresentationNotFound
+        is UnexpectedResponseModeRecord ->
+            WalletResponseValidationError.UnexpectedResponseMode(
+                RequestId(requestId),
+                ResponseModeOption.valueOf(expected),
+                ResponseModeOption.valueOf(actual),
+            )
+        PresentationNotInExpectedStateRecord -> WalletResponseValidationError.PresentationNotInExpectedState
+        IncorrectStateRecord -> WalletResponseValidationError.IncorrectState
+        is InvalidVpTokenRecord -> WalletResponseValidationError.InvalidVpToken(message, cause?.let { Throwable(it) })
+        MissingVpTokenRecord -> WalletResponseValidationError.MissingVpToken
+        RequiredCredentialSetNotSatisfiedRecord -> WalletResponseValidationError.RequiredCredentialSetNotSatisfied
+        InvalidPresentationSubmissionRecord -> WalletResponseValidationError.InvalidPresentationSubmission
+        is InvalidEncryptedResponseRecord -> WalletResponseValidationError.InvalidEncryptedResponse(BadJOSEException(message))
+        DeviceResponseContainsMoreThanOneMDocRecord -> WalletResponseValidationError.HAIPValidationError.DeviceResponseContainsMoreThanOneMDoc
+        is UnsupportedMsoRevocationMechanismRecord ->
+            WalletResponseValidationError.HAIPValidationError.UnsupportedMsoRevocationMechanism(used, allowed)
+        SdJwtVcMustUseTokenStatusListRecord -> WalletResponseValidationError.HAIPValidationError.SdJwtVcMustUseTokenStatusList
+    }
+
+    private fun encodeIssuerChain(chain: NonEmptyList<X509Certificate>): List<String> =
+        chain.map { Base64.getEncoder().encodeToString(it.encoded) }
+
+    private fun decodeIssuerChain(encoded: List<String>): NonEmptyList<X509Certificate>? {
+        val certFactory = CertificateFactory.getInstance("X.509")
+        val certs = encoded.mapNotNull { encodedCert ->
+            val bytes = Base64.getDecoder().decode(encodedCert)
+            certFactory.generateCertificate(ByteArrayInputStream(bytes)) as? X509Certificate
+        }
+        return certs.toNonEmptyListOrNull()
     }
 }

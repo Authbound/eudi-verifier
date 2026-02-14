@@ -25,6 +25,7 @@ import arrow.core.serialization.NonEmptyListSerializer
 import com.nimbusds.jose.EncryptionMethod
 import com.nimbusds.jose.JWEAlgorithm
 import com.nimbusds.jose.JWSAlgorithm
+import com.nimbusds.jose.JWSSigner
 import com.nimbusds.jose.crypto.ECDHEncrypter
 import com.nimbusds.jose.crypto.factories.DefaultJWSSignerFactory
 import com.nimbusds.jose.jwk.JWK
@@ -32,7 +33,6 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.digest.hash
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.encoding.base64UrlNoPadding
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.JWSAlgorithmStringSerializer
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.utils.getOrThrow
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.isSelfSigned
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.UseSerializers
@@ -191,24 +191,36 @@ data class ClientMetaData(
 data class SigningConfig(
     val key: JWK,
     val algorithm: JWSAlgorithm,
+    val signer: JWSSigner? = null,
 ) {
     init {
-        require(key.isPrivate) { "a private key is required for signing" }
-        require(!key.parsedX509CertChain.isNullOrEmpty()) { "signing key must contain a certificate chain" }
-        require(!certificate.isSelfSigned()) { "signing key must not use a self-signed certificate" }
         require(algorithm in JWSAlgorithm.Family.SIGNATURE) { "'${algorithm.name}' is not a valid signature algorithm" }
 
-        // Verify a JWSSigner can be instantiated with the provided key/algorithm combo
-        Either.catch {
-            DefaultJWSSignerFactory().createJWSSigner(key, algorithm)
-        }.getOrThrow { IllegalArgumentException("Invalid configuration", it) }
+        if (signer == null) {
+            require(key.isPrivate) { "a private key is required for signing" }
+            // Verify a JWSSigner can be instantiated with the provided key/algorithm combo
+            Either.catch {
+                DefaultJWSSignerFactory().createJWSSigner(key, algorithm)
+            }.getOrThrow { IllegalArgumentException("Invalid configuration", it) }
+        } else {
+            require(algorithm in signer.supportedJWSAlgorithms()) {
+                "signer does not support algorithm '${algorithm.name}'"
+            }
+        }
     }
 
     /**
      * The signing [X509Certificate].
      */
     val certificate: X509Certificate
-        get() = key.parsedX509CertChain.first()
+        get() = certificateChain?.firstOrNull()
+            ?: error("signing key must contain a certificate chain")
+
+    /**
+     * The signing certificate chain, if present.
+     */
+    val certificateChain: List<X509Certificate>?
+        get() = key.parsedX509CertChain?.takeIf { it.isNotEmpty() }
 }
 
 typealias OriginalClientId = String
@@ -246,7 +258,8 @@ sealed interface VerifierId {
         override val jarSigning: SigningConfig,
     ) : VerifierId {
         init {
-            require(jarSigning.certificate.containsSanDns(originalClientId)) {
+            val certificate = jarSigning.certificate
+            require(certificate.containsSanDns(originalClientId)) {
                 "Original Client Id '$originalClientId' not contained in 'DNS' Subject Alternative Names of JAR Signing Certificate."
             }
         }
@@ -264,7 +277,8 @@ sealed interface VerifierId {
         override val jarSigning: SigningConfig,
     ) : VerifierId {
         init {
-            require(jarSigning.certificate.encodedHashMatches(originalClientId)) {
+            val certificate = jarSigning.certificate
+            require(certificate.encodedHashMatches(originalClientId)) {
                 "Original Client Id '$originalClientId' doesn't match the expected value"
             }
         }

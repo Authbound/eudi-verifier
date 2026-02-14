@@ -30,10 +30,8 @@ inline fun <reified T : Any> COSESign1.decodePayloadAs(): T? =
     }
 
 fun COSESign1.tokenStatusListReference(): StatusReference? =
-    runCatching {
-        decodePayloadAs<MapElement>()
-            ?.value[MapKey(TokenStatusListSpec.STATUS)]
-            ?.let { it as MapElement }
-            ?.value[MapKey(TokenStatusListSpec.STATUS_LIST)]
-            ?.decodeAs<StatusReference>()
-    }.getOrNull()
+    decodePayloadAs<MapElement>()
+        ?.value[MapKey(TokenStatusListSpec.STATUS)]
+        ?.let { it as MapElement }
+        ?.value[MapKey(TokenStatusListSpec.STATUS_LIST)]
+        ?.decodeAs<StatusReference>()

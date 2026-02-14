@@ -13,6 +13,12 @@ services:
       SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-dev}"
       SPRING_DATA_REDIS_URL: "${REDIS_URL}"
       SPRING_DATA_REDIS_SSL_ENABLED: "true"
+      # Optional: push wallet responses to Authbound backend (eliminates polling)
+      # Defaults assume backend runs on host (macOS/Windows Docker): http://host.docker.internal:3008
+      AUTHBOUND_BACKEND_URL: "${AUTHBOUND_BACKEND_URL:-http://host.docker.internal:3008}"
+      # Uses same shared secret as other internal service calls (gateway/backend)
+      # Spring property is `authbound.backend.internalToken` → env var must be `..._INTERNALTOKEN`
+      AUTHBOUND_BACKEND_INTERNALTOKEN: "${INTERNAL_SERVICE_TOKEN}"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 30s

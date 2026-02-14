@@ -37,6 +37,8 @@ import eu.europa.ec.eudi.verifier.endpoint.port.out.presentation.ValidateVerifia
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 
 /**
  * Represent the Authorization Response placed by wallet
@@ -211,12 +213,21 @@ class PostWalletResponseLive(
     private val publishPresentationEvent: PublishPresentationEvent,
     private val validateVerifiablePresentation: ValidateVerifiablePresentation,
 ) : PostWalletResponse {
+    private val logger: Logger = LoggerFactory.getLogger(PostWalletResponseLive::class.java)
 
     override suspend operator fun invoke(
         requestId: RequestId,
         walletResponse: AuthorisationResponse,
     ): Either<WalletResponseValidationError, WalletResponseAcceptedTO?> = either {
         val presentation = loadPresentation(requestId).bind()
+        if (presentation is Submitted) {
+            logger.info(
+                "Duplicate wallet response for requestId={} tx={}, returning existing acceptance",
+                presentation.requestId.value,
+                presentation.id.value,
+            )
+            return@either duplicateAccepted(presentation)
+        }
         doInvoke(presentation, walletResponse)
             .onLeft { cause -> logFailure(presentation, cause) }
             .onRight { (submitted, accepted) -> logWalletResponsePosted(submitted, accepted) }
@@ -254,6 +265,16 @@ class PostWalletResponseLive(
                 GetWalletResponseMethod.Poll -> null
             }
             submitted to accepted
+        }
+
+    private fun duplicateAccepted(presentation: Submitted): WalletResponseAcceptedTO? =
+        when (val getWalletResponseMethod = presentation.getWalletResponseMethod) {
+            is GetWalletResponseMethod.Redirect -> with(createQueryWalletResponseRedirectUri) {
+                requireNotNull(presentation.responseCode) { "ResponseCode expected in Submitted state but not found" }
+                val redirectUri = getWalletResponseMethod.redirectUri(presentation.responseCode)
+                WalletResponseAcceptedTO(redirectUri.toString())
+            }
+            GetWalletResponseMethod.Poll -> null
         }
 
     private suspend fun loadPresentation(requestId: RequestId): Either<WalletResponseValidationError, Presentation> =

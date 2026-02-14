@@ -37,12 +37,14 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.input.timer.ScheduleTimeoutPr
 import eu.europa.ec.eudi.verifier.endpoint.adapter.input.web.*
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.ProvideTrustSource
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.TrustSources
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.authbound.AuthboundBackendCallbackPublisher
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cfg.GenerateRequestIdNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cfg.GenerateTransactionIdNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.CreateJarNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.GenerateEphemeralEncryptionKeyPairNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.VerifyEncryptedResponseWithNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.json.jsonSupport
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.kms.loadKmsSigningMaterial
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.keystore.loadJWK
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.keystore.loadKeyStore
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.lotl.FetchLOTLCertificatesDSS
@@ -50,13 +52,13 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DeviceResponseValidat
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DocumentValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.IssuerSignedItemsShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.ValidityInfoShouldBe
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.persistence.PresentationInMemoryRepo
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.persistence.PresentationRedisRepo
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.presentation.ValidateSdJwtVcOrMsoMdocVerifiablePresentation
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.qrcode.GenerateQrCodeFromData
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.LookupTypeMetadataFromUrl
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.SdJwtVcValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.security.buildS2sJwtDecoder
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.StatusListTokenRedisCache
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.StatusListTokenValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.ParsePemEncodedX509CertificateChainWithNimbus
 import eu.europa.ec.eudi.verifier.endpoint.domain.*
@@ -96,12 +98,15 @@ import org.springframework.security.config.web.server.invoke
 import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder
 import org.springframework.security.web.server.ServerAuthenticationEntryPoint
 import org.springframework.security.web.server.authorization.ServerAccessDeniedHandler
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.web.cors.CorsConfiguration
 import org.springframework.web.cors.reactive.CorsConfigurationSource
 import org.springframework.web.server.ServerWebExchange
 import org.springframework.web.server.WebFilter
 import reactor.core.publisher.Mono
 import reactor.core.publisher.SignalType
+import software.amazon.awssdk.regions.Region
+import software.amazon.awssdk.services.kms.KmsClient
 import java.net.URI
 import java.security.KeyStore
 import java.security.cert.X509Certificate
@@ -117,11 +122,25 @@ private const val keystoreDefaultLocation = "/app/keystore.jks"
 private enum class SigningKeyEnum {
     GenerateRandom,
     LoadFromKeystore,
+    AwsKms,
 }
 
 @OptIn(ExperimentalSerializationApi::class)
 internal fun beans(clock: Clock) = BeanRegistrarDsl {
     registerBean { clock }
+
+    val verifierMaxAge = env.getProperty("verifier.maxAge")?.let { Duration.parse(it) } ?: 5.minutes
+    val presentationRetention = env.getProperty("verifier.presentations.cleanup.maxAge")
+        ?.let { Duration.parse(it) }
+        ?: verifierMaxAge
+    require(presentationRetention.isPositive()) {
+        "'verifier.presentations.cleanup.maxAge' cannot be zero or negative"
+    }
+    require(presentationRetention >= verifierMaxAge) {
+        "'verifier.presentations.cleanup.maxAge' must be greater than or equal to 'verifier.maxAge'"
+    }
+    val includeErrorDetails = !isProduction(env)
+    validateDeploymentConfig(env)
 
     //
     // JOSE
@@ -134,29 +153,15 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
     //
     registerBean { GenerateTransactionIdNimbus(64) }
     registerBean { GenerateRequestIdNimbus(64) }
-    val persistenceMode = env.getProperty("verifier.persistence", "redis").lowercase()
-    val cleanupMaxAge = Duration.parse(env.getProperty("verifier.presentations.cleanup.maxAge", "P10D"))
-    val presentationDefinitionByReference = WalletApi.presentationDefinitionByReference(env.publicUrl())
-    if (persistenceMode == "redis") {
-        registerBean { PresentationRedisRepo(bean(), presentationDefinitionByReference, cleanupMaxAge) }
-        registerBean { bean<PresentationRedisRepo>().loadPresentationById }
-        registerBean { bean<PresentationRedisRepo>().loadPresentationByRequestId }
-        registerBean { bean<PresentationRedisRepo>().storePresentation }
-        registerBean { bean<PresentationRedisRepo>().loadIncompletePresentationsOlderThan }
-        registerBean { bean<PresentationRedisRepo>().loadPresentationEvents }
-        registerBean { bean<PresentationRedisRepo>().publishPresentationEvent }
-        registerBean { bean<PresentationRedisRepo>().deletePresentationsInitiatedBefore }
-    } else {
-        with(PresentationInMemoryRepo()) {
-            registerBean { loadPresentationById }
-            registerBean { loadPresentationByRequestId }
-            registerBean { storePresentation }
-            registerBean { loadIncompletePresentationsOlderThan }
-            registerBean { loadPresentationEvents }
-            registerBean { publishPresentationEvent }
-            registerBean { deletePresentationsInitiatedBefore }
-        }
+    registerBean {
+        PresentationRedisRepo(bean<ReactiveStringRedisTemplate>(), bean(), presentationRetention)
     }
+    registerBean { bean<PresentationRedisRepo>().loadPresentationById }
+    registerBean { bean<PresentationRedisRepo>().loadPresentationByRequestId }
+    registerBean { bean<PresentationRedisRepo>().storePresentation }
+    registerBean { bean<PresentationRedisRepo>().loadIncompletePresentationsOlderThan }
+    registerBean { bean<PresentationRedisRepo>().loadPresentationEvents }
+    registerBean { bean<PresentationRedisRepo>().deletePresentationsInitiatedBefore }
 
     registerBean {
         val allowedRedirectUriSchemes = env.getOptionalList(
@@ -193,6 +198,23 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
 
     // X509
     registerBean { ParsePemEncodedX509CertificateChainWithNimbus }
+
+    //
+    // Authbound backend callbacks (optional)
+    //
+    registerBean {
+        val delegate = bean<PresentationRedisRepo>().publishPresentationEvent
+        val backendUrl = env.getProperty("authbound.backend.url")?.trim()?.trimEnd('/')
+        val internalToken = env.getProperty("authbound.backend.internalToken")?.trim()
+
+        if (backendUrl.isNullOrBlank() || internalToken.isNullOrBlank()) {
+            log.info("Authbound backend callback disabled (authbound.backend.url/authbound.backend.internalToken not set)")
+            delegate
+        } else {
+            log.info("Enabling Authbound backend callback notifications to {}", backendUrl)
+            AuthboundBackendCallbackPublisher(delegate, bean(), backendUrl, internalToken)
+        }
+    }
 
     //
     // Use cases
@@ -259,10 +281,7 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
         )
     }
     registerBean {
-        val maxAge = Duration.parse(env.getProperty("verifier.presentations.cleanup.maxAge", "P10D"))
-        require(maxAge.isPositive()) { "'verifier.presentations.cleanup.maxAge' cannot be zero or negative" }
-
-        DeleteOldPresentationsLive(bean(), maxAge, bean())
+        DeleteOldPresentationsLive(bean(), presentationRetention, bean())
     }
 
     registerBean { GenerateResponseCode.Random }
@@ -280,7 +299,9 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
             } else {
                 createHttpClient(withJsonContentNegotiation = false, trustSelfSigned = false, httpProxy = proxy)
             }
-            StatusListTokenValidator(httpClient, bean(), bean())
+            val trustSources = bean<TrustSources>()
+            val cache = StatusListTokenRedisCache(bean(), bean())
+            StatusListTokenValidator(httpClient, bean(), bean(), trustSources::invoke, cache)
         }
     }
 
@@ -432,6 +453,7 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
             bean(),
             bean(),
             bean<VerifierConfig>().verifierId.jarSigning.key,
+            includeErrorDetails,
         )
         val verifierApi = VerifierApi(
             bean(),
@@ -517,8 +539,22 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
                         fun getOptionalList(name: String): NonEmptyList<String>? =
                             env.getOptionalList(name = name, filter = { it.isNotBlank() }, transform = { it.trim() })
 
-                        allowedOrigins = getOptionalList("cors.origins")
-                        allowedOriginPatterns = getOptionalList("cors.originPatterns")
+                        val configuredOrigins = getOptionalList("cors.origins")
+                        val configuredOriginPatterns = getOptionalList("cors.originPatterns")
+                        if (isProduction(env)) {
+                            val values = buildList {
+                                configuredOrigins?.let { addAll(it) }
+                                configuredOriginPatterns?.let { addAll(it) }
+                            }
+                            require(values.isNotEmpty()) {
+                                "CORS must be configured in production. Set 'cors.origins' or 'cors.originPatterns'."
+                            }
+                            require(
+                                values.none { it == "*" || it == "http://*" || it == "https://*" },
+                            ) { "Wildcard CORS origins are not allowed in production." }
+                        }
+                        allowedOrigins = configuredOrigins
+                        allowedOriginPatterns = configuredOriginPatterns
                         allowedMethods = getOptionalList("cors.methods")
                         run {
                             val headers = getOptionalList("cors.headers")
@@ -547,7 +583,7 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
 
             if (s2sEnabled) {
                 exceptionHandling {
-                    authenticationEntryPoint = jsonAuthEntryPoint()
+                    authenticationEntryPoint = jsonAuthEntryPoint(includeErrorDetails)
                     accessDeniedHandler = jsonAccessDeniedHandler()
                 }
                 oauth2ResourceServer {
@@ -575,6 +611,9 @@ private fun SupplierContextDsl<*>.deviceResponseValidator(
     )
     return DeviceResponseValidator(docValidator)
 }
+
+private inline fun <reified T : Any> SupplierContextDsl<*>.bean(): T =
+    beanProvider<T>().getObject()
 
 private fun SupplierContextDsl<*>.sdJwtVcValidator(
     provideTrustSource: ProvideTrustSource,
@@ -605,12 +644,13 @@ private fun extractTransactionId(request: ServerHttpRequest): String? {
     }
 }
 
-private fun jsonAuthEntryPoint(): ServerAuthenticationEntryPoint =
+private fun jsonAuthEntryPoint(includeErrorDetails: Boolean): ServerAuthenticationEntryPoint =
     ServerAuthenticationEntryPoint { exchange, ex ->
         val request = exchange.request
         val requestId = request.headers.getFirst(REQUEST_ID_HEADER) ?: "n/a"
         val authHeader = request.headers.getFirst("Authorization")
         val authScheme = authHeader?.substringBefore(' ')?.lowercase()
+        val errorMessage = ex.message ?: "Invalid token"
         log.warn(
             "s2s.auth.failed method={} path={} status=401 requestId={} tx_id={} authHeaderPresent={} authScheme={} error={}",
             request.method?.name() ?: "UNKNOWN",
@@ -619,9 +659,10 @@ private fun jsonAuthEntryPoint(): ServerAuthenticationEntryPoint =
             extractTransactionId(request) ?: "n/a",
             authHeader != null,
             authScheme ?: "n/a",
-            ex.message ?: "Invalid token",
+            errorMessage,
         )
-        jsonError(exchange, HttpStatus.UNAUTHORIZED, "unauthorized", ex.message ?: "Invalid token")
+        val responseMessage = if (includeErrorDetails) errorMessage else "Invalid token"
+        jsonError(exchange, HttpStatus.UNAUTHORIZED, "unauthorized", responseMessage)
     }
 
 private fun jsonAccessDeniedHandler(): ServerAccessDeniedHandler =
@@ -664,6 +705,19 @@ private enum class EmbedOptionEnum {
 private fun isProduction(environment: Environment): Boolean =
     environment.acceptsProfiles(Profiles.of("prod", "production"))
 
+private fun validateDeploymentConfig(environment: Environment) {
+    if (!isProduction(environment)) return
+
+    val s2sEnabled = environment.getProperty("verifier.s2s.enabled", Boolean::class.java, true)
+    require(s2sEnabled) { "S2S auth must be enabled in production." }
+
+    val redisUrl = environment.getProperty("spring.data.redis.url")?.trim()
+    require(!redisUrl.isNullOrBlank()) { "Missing required property 'spring.data.redis.url' in production." }
+    require(redisUrl != "redis://localhost:6379") {
+        "Redis URL must be explicitly configured for production (default localhost is not allowed)."
+    }
+}
+
 private fun validateKeystoreConfig(environment: Environment) {
     val keystoreLocation =
         environment.getProperty("verifier.jar.signing.key.keystore")
@@ -689,7 +743,7 @@ private fun jarSigningConfig(environment: Environment, clock: Clock): SigningCon
     if (prod && signingKeyMode == SigningKeyEnum.GenerateRandom) {
         error(
             "GenerateRandom JAR signing key is not allowed in production. " +
-                "Set verifier.jar.signing.key=LoadFromKeystore and configure keystore settings."
+                "Set verifier.jar.signing.key=LoadFromKeystore or AwsKms and configure the signing key settings."
         )
     }
 
@@ -697,78 +751,106 @@ private fun jarSigningConfig(environment: Environment, clock: Clock): SigningCon
         validateKeystoreConfig(environment)
     }
 
-    val key = run {
-        fun loadFromKeystore(): JWK {
-            val keystoreResource = run {
-                val keystoreLocation = environment.getRequiredProperty("verifier.jar.signing.key.keystore")
-                log.info("Will try to load Keystore from: '{}'", keystoreLocation)
-                val configuredResource = DefaultResourceLoader().getResource(keystoreLocation)
-                val resolvedResource = if (configuredResource.exists()) {
-                    configuredResource
-                } else if (!prod) {
-                    log.warn(
-                        "Could not find Keystore at '{}'. Fallback to '{}'",
-                        keystoreLocation,
-                        keystoreDefaultLocation,
-                    )
-                    FileSystemResource(keystoreDefaultLocation)
-                        .takeIf { it.exists() }
-                } else {
-                    null
-                }
-                checkNotNull(resolvedResource) {
-                    "Could not load Keystore at '$keystoreLocation'. " +
-                        "Fallback is disabled in production."
-                }
-                resolvedResource
-            }
-
-            val keystoreType =
-                environment.getProperty("verifier.jar.signing.key.keystore.type", KeyStore.getDefaultType())
-            val keystorePassword =
-                environment.getProperty("verifier.jar.signing.key.keystore.password")?.takeIf { it.isNotBlank() }
-            val keyAlias =
-                environment.getRequiredProperty("verifier.jar.signing.key.alias")
-            val keyPassword =
-                environment.getProperty("verifier.jar.signing.key.password")?.takeIf { it.isNotBlank() }
-
-            return keystoreResource.inputStream.use { inputStream ->
-                val keystore = KeyStore.getInstance(keystoreType)
-                keystore.load(inputStream, keystorePassword?.toCharArray())
-
-                val jwk = JWK.load(keystore, keyAlias, keyPassword?.toCharArray())
-                val chain = keystore.getCertificateChain(keyAlias)
-                    ?.mapNotNull { certificate -> certificate as? X509Certificate }
-                    ?.toNonEmptyListOrNull()
-
-                if (chain != null) {
-                    val encodedChain = chain.map { Base64.encode(it.encoded) }
-                    when (jwk) {
-                        is ECKey -> ECKey.Builder(jwk).x509CertChain(encodedChain).build()
-                        else -> jwk
-                    }
-                } else {
-                    jwk
-                }
-            }
-        }
-
-        fun generateRandom(): ECKey =
-            ECKeyGenerator(Curve.P_256)
-                .keyUse(KeyUse.SIGNATURE)
-                .keyID(UUID.randomUUID().toString())
-                .issueTime(Date.from(clock.instant()))
-                .generate()
-
-        when (signingKeyMode) {
-            SigningKeyEnum.LoadFromKeystore -> loadFromKeystore()
-            SigningKeyEnum.GenerateRandom -> generateRandom()
+    val algorithm = environment.getProperty("verifier.jar.signing.algorithm", "ES256").let(JWSAlgorithm::parse)
+    return when (signingKeyMode) {
+        SigningKeyEnum.LoadFromKeystore -> SigningConfig(loadFromKeystore(environment, prod), algorithm)
+        SigningKeyEnum.GenerateRandom -> SigningConfig(generateRandom(clock), algorithm)
+        SigningKeyEnum.AwsKms -> {
+            val kmsConfig = parseKmsConfig(environment)
+            log.info(
+                "Using AWS KMS for JAR signing keyId={} region={} kidOverride={}",
+                kmsConfig.keyId,
+                kmsConfig.region.id(),
+                kmsConfig.kid ?: "none",
+            )
+            val kmsClient = KmsClient.builder().region(kmsConfig.region).build()
+            val material = loadKmsSigningMaterial(kmsClient, kmsConfig.keyId, algorithm, kmsConfig.kid)
+            SigningConfig(material.jwk, algorithm, material.signer)
         }
     }
-
-    val algorithm = environment.getProperty("verifier.jar.signing.algorithm", "ES256").let(JWSAlgorithm::parse)
-    return SigningConfig(key, algorithm)
 }
+
+private data class KmsKeyConfig(
+    val keyId: String,
+    val region: Region,
+    val kid: String?,
+)
+
+private fun parseKmsConfig(environment: Environment): KmsKeyConfig {
+    val keyId =
+        environment.getProperty("verifier.jar.signing.key.kms.key-id")
+            ?.takeIf { it.isNotBlank() }
+            ?: error("Missing required property 'verifier.jar.signing.key.kms.key-id'")
+    val region =
+        environment.getProperty("verifier.jar.signing.key.kms.region")
+            ?: error("Missing required property 'verifier.jar.signing.key.kms.region'")
+    val kid =
+        environment.getProperty("verifier.jar.signing.key.kms.kid")
+            ?.takeIf { it.isNotBlank() }
+    return KmsKeyConfig(keyId, Region.of(region), kid)
+}
+
+private fun loadFromKeystore(environment: Environment, prod: Boolean): JWK {
+    val keystoreResource = run {
+        val keystoreLocation = environment.getRequiredProperty("verifier.jar.signing.key.keystore")
+        log.info("Will try to load Keystore from: '{}'", keystoreLocation)
+        val configuredResource = DefaultResourceLoader().getResource(keystoreLocation)
+        val resolvedResource = if (configuredResource.exists()) {
+            configuredResource
+        } else if (!prod) {
+            log.warn(
+                "Could not find Keystore at '{}'. Fallback to '{}'",
+                keystoreLocation,
+                keystoreDefaultLocation,
+            )
+            FileSystemResource(keystoreDefaultLocation)
+                .takeIf { it.exists() }
+        } else {
+            null
+        }
+        checkNotNull(resolvedResource) {
+            "Could not load Keystore at '$keystoreLocation'. " +
+                "Fallback is disabled in production."
+        }
+        resolvedResource
+    }
+
+    val keystoreType =
+        environment.getProperty("verifier.jar.signing.key.keystore.type", KeyStore.getDefaultType())
+    val keystorePassword =
+        environment.getProperty("verifier.jar.signing.key.keystore.password")?.takeIf { it.isNotBlank() }
+    val keyAlias =
+        environment.getRequiredProperty("verifier.jar.signing.key.alias")
+    val keyPassword =
+        environment.getProperty("verifier.jar.signing.key.password")?.takeIf { it.isNotBlank() }
+
+    return keystoreResource.inputStream.use { inputStream ->
+        val keystore = KeyStore.getInstance(keystoreType)
+        keystore.load(inputStream, keystorePassword?.toCharArray())
+
+        val jwk = JWK.load(keystore, keyAlias, keyPassword?.toCharArray())
+        val chain = keystore.getCertificateChain(keyAlias)
+            ?.mapNotNull { certificate -> certificate as? X509Certificate }
+            ?.toNonEmptyListOrNull()
+
+        if (chain != null) {
+            val encodedChain = chain.map { Base64.encode(it.encoded) }
+            when (jwk) {
+                is ECKey -> ECKey.Builder(jwk).x509CertChain(encodedChain).build()
+                else -> jwk
+            }
+        } else {
+            jwk
+        }
+    }
+}
+
+private fun generateRandom(clock: Clock): ECKey =
+    ECKeyGenerator(Curve.P_256)
+        .keyUse(KeyUse.SIGNATURE)
+        .keyID(UUID.randomUUID().toString())
+        .issueTime(clock.now().toJavaDate())
+        .generate()
 
 private fun verifierConfig(environment: Environment, clock: Clock): VerifierConfig {
     val verifierId = run {

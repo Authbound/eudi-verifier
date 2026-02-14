@@ -67,21 +67,25 @@ class CreateJarNimbus : CreateJar {
         requestObject: RequestObject,
         walletNonce: String?,
     ): Either<Throwable, SignedJWT> = Either.catch {
-        val (key, algorithm) = requestObject.verifierId.jarSigning
+        val signingConfig = requestObject.verifierId.jarSigning
+        val (key, algorithm) = signingConfig
+        val signer = signingConfig.signer ?: DefaultJWSSignerFactory().createJWSSigner(key, algorithm)
         val header = JWSHeader.Builder(algorithm)
             .apply {
                 when (requestObject.verifierId) {
                     is VerifierId.PreRegistered -> keyID(key.keyID)
-                    is VerifierId.X509SanDns, is VerifierId.X509Hash -> x509CertChain(
-                        key.parsedX509CertChain.dropRootCAIfPresent().map { Base64.encode(it.encoded) },
-                    )
+                    is VerifierId.X509SanDns, is VerifierId.X509Hash -> {
+                        val chain = signingConfig.certificateChain
+                            ?: error("signing key must contain a certificate chain")
+                        x509CertChain(chain.dropRootCAIfPresent().map { Base64.encode(it.encoded) })
+                    }
                 }
             }
             .type(JOSEObjectType(RFC9101.REQUEST_OBJECT_MEDIA_SUBTYPE))
             .build()
         val claimSet = asClaimSet(toNimbus(clientMetaData, responseMode), requestObject, walletNonce)
 
-        SignedJWT(header, claimSet).apply { sign(DefaultJWSSignerFactory().createJWSSigner(key, algorithm)) }
+        SignedJWT(header, claimSet).apply { sign(signer) }
     }
 
     internal fun encrypt(

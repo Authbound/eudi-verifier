@@ -43,6 +43,7 @@ class WalletApi(
     private val retrieveRequestObject: RetrieveRequestObject,
     private val postWalletResponse: PostWalletResponse,
     private val signingKey: JWK,
+    private val includeErrorDetails: Boolean,
 ) {
 
     private val logger: Logger = LoggerFactory.getLogger(WalletApi::class.java)
@@ -126,7 +127,7 @@ class WalletApi(
             },
             ifLeft = { error ->
                 logger.error("$error while handling post of wallet response ")
-                badRequest().json().bodyValueAndAwait(error.toJson())
+                badRequest().json().bodyValueAndAwait(error.toJson(includeErrorDetails))
             },
         )
     } catch (t: SerializationException) {
@@ -208,7 +209,7 @@ class WalletApi(
                 .toURL()
         }
 
-        private fun WalletResponseValidationError.toJson(): JsonObject = buildJsonObject {
+        private fun WalletResponseValidationError.toJson(includeDetails: Boolean): JsonObject = buildJsonObject {
             when (this@toJson) {
                 WalletResponseValidationError.IncorrectState -> {
                     put("error", "IncorrectState")
@@ -216,8 +217,15 @@ class WalletApi(
                 }
                 is WalletResponseValidationError.InvalidEncryptedResponse -> {
                     put("error", "InvalidEncryptedResponse")
-                    put("description", this@toJson.error.message)
-                    put("cause", this@toJson.error.cause?.message)
+                    val description = if (includeDetails) {
+                        this@toJson.error.message
+                    } else {
+                        "Invalid encrypted response."
+                    }
+                    put("description", description)
+                    if (includeDetails) {
+                        this@toJson.error.cause?.message?.let { put("cause", it) }
+                    }
                 }
                 WalletResponseValidationError.InvalidPresentationSubmission -> {
                     put("error", "InvalidPresentationSubmission")
@@ -225,8 +233,15 @@ class WalletApi(
                 }
                 is WalletResponseValidationError.InvalidVpToken -> {
                     put("error", "InvalidVpToken")
-                    put("description", this@toJson.message)
-                    this@toJson.cause?.let { put("cause", message) }
+                    val description = if (includeDetails) {
+                        this@toJson.message
+                    } else {
+                        "Invalid vp_token."
+                    }
+                    put("description", description)
+                    if (includeDetails) {
+                        this@toJson.cause?.message?.let { put("cause", it) }
+                    }
                 }
                 WalletResponseValidationError.MissingVpToken -> {
                     put("error", "MissingVpToken")

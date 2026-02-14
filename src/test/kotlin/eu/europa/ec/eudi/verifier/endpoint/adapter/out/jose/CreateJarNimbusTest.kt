@@ -52,7 +52,7 @@ class CreateJarNimbusTest {
 
     @Test
     fun `given a request object, it should be signed and decoded`() {
-        val query = Json.decodeFromString<InitTransactionTO>(TestUtils.loadResource("02-dcql.json")).dcqlQuery
+        val query = Json.decodeFromString<InitTransactionTO>(TestUtils.loadResource("fixtures/eudi/02-dcql.json")).dcqlQuery
         val requestObject = RequestObject(
             verifierId = verifierId,
             responseType = listOf("vp_token"),

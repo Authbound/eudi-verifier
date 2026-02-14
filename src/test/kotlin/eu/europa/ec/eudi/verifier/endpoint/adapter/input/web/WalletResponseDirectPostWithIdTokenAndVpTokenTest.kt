@@ -74,7 +74,7 @@ internal class WalletResponseDirectPostWithIdTokenAndVpTokenTest {
     @Order(value = 1)
     fun `post wallet response (only idToken) - confirm returns 200`() = runTest {
         // given
-        val initTransaction = VerifierApiClient.loadInitTransactionTO("02-dcql.json")
+        val initTransaction = VerifierApiClient.loadInitTransactionTO("fixtures/eudi/02-dcql.json")
         val transactionInitialized =
             assertIs<InitTransactionResponse.JwtSecuredAuthorizationRequestTO>(VerifierApiClient.initTransaction(client, initTransaction))
         val requestId =
@@ -84,7 +84,7 @@ internal class WalletResponseDirectPostWithIdTokenAndVpTokenTest {
 
         val formEncodedBody: MultiValueMap<String, Any> = LinkedMultiValueMap()
         formEncodedBody.add("state", requestId.value)
-        formEncodedBody.add("vp_token", TestUtils.loadResource("02-vpToken.json"))
+        formEncodedBody.add("vp_token", TestUtils.loadResource("fixtures/eudi/02-vpToken.json"))
 
         // when
         WalletApiClient.directPost(client, requestId, formEncodedBody)
@@ -133,7 +133,7 @@ internal class WalletResponseDirectPostWithIdTokenAndVpTokenTest {
         }
 
         // Test with single Verifiable Presentation -- single JsonObject
-        test("02-dcql.json", "02-vpToken.json") {
+        test("fixtures/eudi/02-dcql.json", "fixtures/eudi/02-vpToken.json") {
             val vpToken = assertNotNull(it.vpToken)
 
             val waDriverLicence = assertIs<JsonArray>(vpToken["wa_driver_license"])
@@ -142,7 +142,7 @@ internal class WalletResponseDirectPostWithIdTokenAndVpTokenTest {
         }
 
         // Test with multiple Verifiable Presentation -- single JsonArray that contains one JsonPrimitive and one JsonObject
-        test("03-dcql.json", "03-vpToken.json") {
+        test("fixtures/eudi/03-dcql.json", "fixtures/eudi/03-vpToken.json") {
             val vpToken = assertNotNull(it.vpToken)
             assertEquals(2, vpToken.size)
 
@@ -163,7 +163,7 @@ internal class WalletResponseDirectPostWithIdTokenAndVpTokenTest {
     @Order(value = 3)
     fun `with response_mode direct_post, direct_post_jwt wallet responses are rejected`() = runTest {
         // given
-        val initTransaction = VerifierApiClient.loadInitTransactionTO("02-dcql.json")
+        val initTransaction = VerifierApiClient.loadInitTransactionTO("fixtures/eudi/02-dcql.json")
         val transactionInitialized =
             assertIs<InitTransactionResponse.JwtSecuredAuthorizationRequestTO>(VerifierApiClient.initTransaction(client, initTransaction))
         val requestId =
@@ -188,7 +188,7 @@ internal class WalletResponseDirectPostWithIdTokenAndVpTokenTest {
     @Test
     @Order(value = 4)
     fun `presentation with dcql query accepts dcql response`() = runTest {
-        val initTransaction = VerifierApiClient.loadInitTransactionTO("04-dcql.json")
+        val initTransaction = VerifierApiClient.loadInitTransactionTO("fixtures/eudi/04-dcql.json")
         val transactionInitialized =
             assertIs<InitTransactionResponse.JwtSecuredAuthorizationRequestTO>(VerifierApiClient.initTransaction(client, initTransaction))
         val presentationId = TransactionId(transactionInitialized.transactionId)
@@ -197,7 +197,7 @@ internal class WalletResponseDirectPostWithIdTokenAndVpTokenTest {
 
         val formEncodedBody: MultiValueMap<String, Any> = LinkedMultiValueMap()
         formEncodedBody.add("state", requestId.value)
-        formEncodedBody.add("vp_token", TestUtils.loadResource("04-vpToken.json"))
+        formEncodedBody.add("vp_token", TestUtils.loadResource("fixtures/eudi/04-vpToken.json"))
 
         WalletApiClient.directPost(client, requestId, formEncodedBody)
 
@@ -218,7 +218,7 @@ internal class WalletResponseDirectPostWithIdTokenAndVpTokenTest {
     @Test
     @Order(value = 5)
     fun `presentation with dcql query rejects dcql response when credential sets are not satisfied`() = runTest {
-        val initTransaction = VerifierApiClient.loadInitTransactionTO("05-dcql.json")
+        val initTransaction = VerifierApiClient.loadInitTransactionTO("fixtures/eudi/05-dcql.json")
         val transactionInitialized =
             assertIs<InitTransactionResponse.JwtSecuredAuthorizationRequestTO>(VerifierApiClient.initTransaction(client, initTransaction))
         val requestId = RequestId(transactionInitialized.requestUri?.removePrefix("http://localhost:0/wallet/request.jwt/")!!)
@@ -226,7 +226,7 @@ internal class WalletResponseDirectPostWithIdTokenAndVpTokenTest {
 
         val formEncodedBody: MultiValueMap<String, Any> = LinkedMultiValueMap()
         formEncodedBody.add("state", requestId.value)
-        formEncodedBody.add("vp_token", TestUtils.loadResource("04-vpToken.json"))
+        formEncodedBody.add("vp_token", TestUtils.loadResource("fixtures/eudi/04-vpToken.json"))
 
         try {
             WalletApiClient.directPost(client, requestId, formEncodedBody)
@@ -239,7 +239,7 @@ internal class WalletResponseDirectPostWithIdTokenAndVpTokenTest {
     @Test
     @Order(value = 6)
     fun `presentation with dcql query accepts dcql response when all required credential sets are satisfied`() = runTest {
-        val initTransaction = VerifierApiClient.loadInitTransactionTO("05-dcql.json")
+        val initTransaction = VerifierApiClient.loadInitTransactionTO("fixtures/eudi/05-dcql.json")
         val transactionInitialized =
             assertIs<InitTransactionResponse.JwtSecuredAuthorizationRequestTO>(VerifierApiClient.initTransaction(client, initTransaction))
         val presentationId = TransactionId(transactionInitialized.transactionId)
@@ -248,7 +248,7 @@ internal class WalletResponseDirectPostWithIdTokenAndVpTokenTest {
 
         val formEncodedBody: MultiValueMap<String, Any> = LinkedMultiValueMap()
         formEncodedBody.add("state", requestId.value)
-        formEncodedBody.add("vp_token", TestUtils.loadResource("05-vpToken.json"))
+        formEncodedBody.add("vp_token", TestUtils.loadResource("fixtures/eudi/05-vpToken.json"))
 
         WalletApiClient.directPost(client, requestId, formEncodedBody)
 

@@ -114,7 +114,12 @@ object TestContext {
     classes = [VerifierApplication::class],
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 )
-@ContextConfiguration(initializers = [BeansDslApplicationContextInitializer::class])
+@ContextConfiguration(
+    initializers = [
+        BeansDslApplicationContextInitializer::class,
+        RedisTestContainerInitializer::class,
+    ],
+)
 @AutoConfigureWebTestClient
 internal annotation class VerifierApplicationTest(
 

@@ -86,12 +86,15 @@ dependencies {
     implementation(libs.dss.tsl.validation)
     implementation(libs.dss.utils.apache.commons)
     implementation(libs.aedile)
+    implementation(libs.aws.kms)
 
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("io.projectreactor:reactor-test")
     testImplementation("org.springframework.boot:spring-boot-webtestclient")
+    testImplementation(libs.testcontainers)
+    testImplementation(libs.testcontainers.junit.jupiter)
 }
 
 java {

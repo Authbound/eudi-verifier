@@ -24,6 +24,8 @@ zxing = "3.5.3"
 uri = "0.0.19"
 dss = "6.2"
 aedile = "2.1.2"
+testcontainers = "1.20.4"
+aws = "2.25.47"
 
 [libraries]
 kotlin-bom = { module = "org.jetbrains.kotlin:kotlin-bom", version.ref = "kotlin" }
@@ -55,6 +57,9 @@ dss-tsl-validation = { module = "eu.europa.ec.joinup.sd-dss:dss-tsl-validation",
 dss-utils-apache-commons = { module = "eu.europa.ec.joinup.sd-dss:dss-utils-apache-commons", version.ref = "dss" }
 aedile = { module = "com.sksamuel.aedile:aedile-core", version.ref = "aedile" }
 cose-java = { module = "com.augustcellars.cose:cose-java", version.ref = "cose" }
+testcontainers = { module = "org.testcontainers:testcontainers", version.ref = "testcontainers" }
+testcontainers-junit-jupiter = { module = "org.testcontainers:junit-jupiter", version.ref = "testcontainers" }
+aws-kms = { module = "software.amazon.awssdk:kms", version.ref = "aws" }
 
 [plugins]
 spring-boot = { id = "org.springframework.boot", version.ref = "springboot" }

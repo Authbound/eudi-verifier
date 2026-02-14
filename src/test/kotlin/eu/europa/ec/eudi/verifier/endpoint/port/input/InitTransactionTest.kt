@@ -283,7 +283,7 @@ class InitTransactionTest {
 
         suspend fun test(transactionData: JsonObject) {
             val input = VerifierApiClient.loadInitTransactionTO(
-                "00-dcql.json",
+                "fixtures/eudi/00-dcql.json",
             ).copy(transactionData = listOf(transactionData))
 
             val result = useCase(input)
@@ -322,8 +322,8 @@ class InitTransactionTest {
             assertEquals(ValidationError.InvalidTransactionData.left(), result)
         }
 
-        test("00-dcql.json", "_foo_wa_driver_license")
-        test("04-dcql.json", "_foo_employment_input")
+        test("fixtures/eudi/00-dcql.json", "_foo_wa_driver_license")
+        test("fixtures/eudi/04-dcql.json", "_foo_employment_input")
     }
 
     @Test
@@ -366,8 +366,8 @@ class InitTransactionTest {
             assertEquals(expectedJarTransactionData, jarTransactionData)
         }
 
-        test("00-dcql.json", "wa_driver_license")
-        test("04-dcql.json", "employment_input")
+        test("fixtures/eudi/00-dcql.json", "wa_driver_license")
+        test("fixtures/eudi/04-dcql.json", "employment_input")
     }
 
     private fun testWithInvalidInput(input: InitTransactionTO, expectedError: ValidationError) =
@@ -378,5 +378,5 @@ class InitTransactionTest {
 
     private suspend fun loadPresentationById(id: TransactionId) = TestContext.loadPresentationById(id)
 
-    private fun dcqlQuery() = VerifierApiClient.loadInitTransactionTO("00-dcql.json").dcqlQuery!!
+    private fun dcqlQuery() = VerifierApiClient.loadInitTransactionTO("fixtures/eudi/00-dcql.json").dcqlQuery!!
 }

@@ -182,6 +182,33 @@ sealed interface Presentation {
                         requested.profile,
                     )
                 }
+
+            internal fun restore(
+                id: TransactionId,
+                initiatedAt: Instant,
+                query: DCQL,
+                transactionData: NonEmptyList<TransactionData>?,
+                requestId: RequestId,
+                requestObjectRetrievedAt: Instant,
+                nonce: Nonce,
+                responseMode: ResponseMode,
+                getWalletResponseMethod: GetWalletResponseMethod,
+                issuerChain: NonEmptyList<X509Certificate>?,
+                profile: Profile,
+            ): RequestObjectRetrieved =
+                RequestObjectRetrieved(
+                    id,
+                    initiatedAt,
+                    query,
+                    transactionData,
+                    requestId,
+                    requestObjectRetrievedAt,
+                    nonce,
+                    responseMode,
+                    getWalletResponseMethod,
+                    issuerChain,
+                    profile,
+                )
         }
     }
 
@@ -197,6 +224,7 @@ sealed interface Presentation {
         val walletResponse: WalletResponse,
         val nonce: Nonce,
         val responseCode: ResponseCode?,
+        val getWalletResponseMethod: GetWalletResponseMethod,
     ) : Presentation {
         companion object {
             fun submitted(
@@ -215,9 +243,33 @@ sealed interface Presentation {
                         walletResponse,
                         nonce,
                         responseCode,
+                        getWalletResponseMethod,
                     )
                 }
             }
+
+            internal fun restore(
+                id: TransactionId,
+                initiatedAt: Instant,
+                requestId: RequestId,
+                requestObjectRetrievedAt: Instant,
+                submittedAt: Instant,
+                walletResponse: WalletResponse,
+                nonce: Nonce,
+                responseCode: ResponseCode?,
+                getWalletResponseMethod: GetWalletResponseMethod,
+            ): Submitted =
+                Submitted(
+                    id,
+                    initiatedAt,
+                    requestId,
+                    requestObjectRetrievedAt,
+                    submittedAt,
+                    walletResponse,
+                    nonce,
+                    responseCode,
+                    getWalletResponseMethod,
+                )
         }
     }
 
@@ -255,6 +307,21 @@ sealed interface Presentation {
                     at,
                 )
             }
+
+            internal fun restore(
+                id: TransactionId,
+                initiatedAt: Instant,
+                requestObjectRetrievedAt: Instant?,
+                submittedAt: Instant?,
+                timedOutAt: Instant,
+            ): TimedOut =
+                TimedOut(
+                    id,
+                    initiatedAt,
+                    requestObjectRetrievedAt,
+                    submittedAt,
+                    timedOutAt,
+                )
         }
     }
 }

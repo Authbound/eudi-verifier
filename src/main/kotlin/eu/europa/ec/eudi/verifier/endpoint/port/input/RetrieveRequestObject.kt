@@ -38,6 +38,7 @@ import kotlinx.serialization.Required
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import org.slf4j.LoggerFactory
 import kotlin.reflect.KClass
 
 /**
@@ -85,6 +86,7 @@ class RetrieveRequestObjectLive(
 ) : RetrieveRequestObject {
 
     private val walletMetadataValidator = WalletMetadataValidator(verifierConfig, httpClient)
+    private val logger = LoggerFactory.getLogger(RetrieveRequestObjectLive::class.java)
 
     override suspend operator fun invoke(
         requestId: RequestId,
@@ -106,8 +108,17 @@ class RetrieveRequestObjectLive(
                 RetrieveRequestObjectError.InvalidState(Presentation.Requested::class, presentation::class)
             }
 
-
-            logger.info("Retrieving Request Object for presentation with id '${presentation.id}' and method '$method' using wallet nonce '${method.walletNonceOrNull}' and wallet metadata '${method.walletMetadataOrNull}'")
+            val methodName = when (method) {
+                is RetrieveRequestObjectMethod.Get -> "GET"
+                is RetrieveRequestObjectMethod.Post -> "POST"
+            }
+            logger.info(
+                "Retrieving request object tx={} method={} walletMetadataPresent={} walletNoncePresent={}",
+                presentation.id.value,
+                methodName,
+                method.walletMetadataOrNull != null,
+                method.walletNonceOrNull != null,
+            )
 
             suspend fun updatePresentationAndCreateJar(
                 encryptionRequirement: EncryptionRequirement,
@@ -148,7 +159,7 @@ class RetrieveRequestObjectLive(
             val encryptionRequirement = walletMetadata?.validate(presentation)?.bind() ?: EncryptionRequirement.NotRequired
 
             val (updatePresentation, jar) = updatePresentationAndCreateJar(encryptionRequirement)
-            logger.info("updated presentation ${updatePresentation.toString()}, jar $jar")
+            logger.info("Request object created tx={}", updatePresentation.id.value)
             log(updatePresentation, jar)
             jar
         }.onLeft { error ->
