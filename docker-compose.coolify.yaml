@@ -1,57 +1,109 @@
-version: '3.3'
+# EUDI Verifier — Coolify Production Stack
+# Based on infra/compose/non-js.yaml, adapted for Coolify deployment.
+# Includes Redis (required for verifier session persistence).
+#
+# Required env vars (set via Coolify UI):
+#   DOMAIN                - Base domain (e.g. authbound.io)
+#   REDIS_PASSWORD        - Redis auth password
+#   AUTHBOUND_BACKEND_URL - Backend URL for wallet response callbacks
+#   INTERNAL_SERVICE_TOKEN - S2S auth token for backend callbacks
+#   EUDI_S2S_JWKS_URL     - Gateway JWKS endpoint for JWT validation
+#   EUDI_S2S_ISSUER       - Expected JWT issuer (gateway URL)
 
 services:
-  verifier: 
+  redis:
+    image: redis:7-alpine
+    container_name: eudi-redis
+    command: >
+      redis-server
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD}
+      --rename-command FLUSHALL ""
+      --rename-command FLUSHDB ""
+      --rename-command DEBUG ""
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - coolify
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+
+  eudi-verifier:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: verifier-backend
+    container_name: eudi-verifier
     restart: unless-stopped
-    # ports:
-    #   - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
-      - coolify # Connect to Coolify's network
+      - coolify
     environment:
-      VERIFIER_PUBLICURL: "https://verifier.authbound.io" 
+      # --- Public URL & Response ---
+      VERIFIER_PUBLICURL: "https://verifier.${DOMAIN}"
       VERIFIER_RESPONSE_MODE: "DirectPost"
-      # SERVER_PORT: "8080" 
-      # SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-prod}" 
+
+      # --- Redis (session persistence) ---
+      SPRING_DATA_REDIS_URL: "redis://:${REDIS_PASSWORD}@redis:6379"
+      SPRING_DATA_REDIS_SSL_ENABLED: "false"
+
+      # --- Backend callback (verifier pushes wallet responses to backend) ---
+      AUTHBOUND_BACKEND_URL: "${AUTHBOUND_BACKEND_URL}"
+      AUTHBOUND_BACKEND_INTERNALTOKEN: "${INTERNAL_SERVICE_TOKEN}"
+
+      # --- S2S JWT (gateway → verifier authentication) ---
+      EUDI_S2S_JWKS_URL: "${EUDI_S2S_JWKS_URL}"
+      EUDI_S2S_ISSUER: "${EUDI_S2S_ISSUER}"
+
+      # --- JAR signing (GenerateRandom for now, AwsKms for production) ---
+      VERIFIER_JAR_SIGNING_KEY: "${VERIFIER_JAR_SIGNING_KEY:-GenerateRandom}"
+      VERIFIER_JAR_SIGNING_KEY_KMS_KEY_ID: "${VERIFIER_JAR_SIGNING_KEY_KMS_KEY_ID:-}"
+      VERIFIER_JAR_SIGNING_KEY_KMS_REGION: "${VERIFIER_JAR_SIGNING_KEY_KMS_REGION:-}"
+      VERIFIER_JAR_SIGNING_KEY_KMS_KID: "${VERIFIER_JAR_SIGNING_KEY_KMS_KID:-}"
+      AWS_ACCESS_KEY_ID: "${EUDI_VERIFIER_AWS_ACCESS_KEY_ID:-}"
+      AWS_SECRET_ACCESS_KEY: "${EUDI_VERIFIER_AWS_SECRET_ACCESS_KEY:-}"
+      AWS_REGION: "${EUDI_VERIFIER_AWS_REGION:-eu-west-1}"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
       start_period: 40s
-    labels:
-      - caddy=verifier.authbound.io 
-      - caddy.reverse_proxy={{upstreams 8080}}
-      
-
-  verifier-ui: 
-    image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest
-    container_name: verifier-ui
-    restart: unless-stopped
-    # ports:
-    #   - "4300:4300"
-    networks:
-      - coolify 
-    environment:
-      - DOMAIN_NAME="https://verifier.authbound.io"
-      - HOST_API="https://verifier.authbound.io"
-
-    depends_on: 
-      - verifier
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:4300 || exit 1"]
-      interval: 30s
-      timeout: 10s
       retries: 5
-      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
     labels:
-      - caddy=verifier-ui.authbound.io
-      - caddy.reverse_proxy={{upstreams 4300}}
-      
+      - caddy=verifier.${DOMAIN}
+      - caddy.reverse_proxy={{upstreams 8080}}
 
+volumes:
+  redis_data:
 
 networks:
   coolify:
