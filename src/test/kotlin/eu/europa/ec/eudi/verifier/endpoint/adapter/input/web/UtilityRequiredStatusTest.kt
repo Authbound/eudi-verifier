@@ -62,6 +62,7 @@ import java.security.MessageDigest
 import java.time.Instant
 import java.util.Date
 import java.util.zip.DeflaterOutputStream
+import kotlin.time.Duration.Companion.seconds
 
 internal class UtilityRequiredStatusTest {
     private val issuer = "https://issuer.example/api/v1/openid4vci"
@@ -158,7 +159,16 @@ internal class UtilityRequiredStatusTest {
             PublishPresentationEvent { },
             trust,
         ) else null
-        val validator = SdJwtVcValidator(trust, http, policy, TestContext.verifierId, statusValidator, TypeMetadataPolicy.NotUsed)
+        val validator = SdJwtVcValidator(
+            trust,
+            http,
+            policy,
+            TestContext.verifierId,
+            statusValidator,
+            clock = Clock.System,
+            skew = 5.seconds,
+            typeMetadataPolicy = TypeMetadataPolicy.NotUsed,
+        )
         val validate = ValidateSdJwtVc({ validator }, { error("No synthetic certificate chain expected") })
         return WebTestClient.bindToRouterFunction(
             UtilityApi(mock(ValidateMsoMdocDeviceResponse::class.java), validate, ProcessSdJwtVc()).route,
