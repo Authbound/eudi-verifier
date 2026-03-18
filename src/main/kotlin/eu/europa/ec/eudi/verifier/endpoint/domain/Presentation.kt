@@ -169,7 +169,7 @@ sealed interface VpContent {
     /**
      * A 'vp_token' response as defined by DCQL.
      */
-    data class DCQL(val verifiablePresentations: Map<QueryId, VerifiablePresentation>) : VpContent {
+    data class DCQL(val verifiablePresentations: Map<QueryId, NonEmptyList<VerifiablePresentation>>) : VpContent {
         init {
             require(verifiablePresentations.isNotEmpty())
         }
@@ -179,7 +179,7 @@ sealed interface VpContent {
 internal fun VpContent.verifiablePresentations(): List<VerifiablePresentation> =
     when (this) {
         is VpContent.PresentationExchange -> verifiablePresentations
-        is VpContent.DCQL -> verifiablePresentations.values.distinct()
+        is VpContent.DCQL -> verifiablePresentations.values.flatten().distinct()
     }
 
 internal fun VpContent.presentationSubmissionOrNull(): PresentationSubmission? =

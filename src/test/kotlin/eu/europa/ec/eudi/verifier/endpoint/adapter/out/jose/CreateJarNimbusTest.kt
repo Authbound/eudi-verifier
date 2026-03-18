@@ -33,6 +33,7 @@ import eu.europa.ec.eudi.prex.PresentationExchange
 import eu.europa.ec.eudi.verifier.endpoint.TestContext
 import eu.europa.ec.eudi.verifier.endpoint.domain.EphemeralEncryptionKeyPairJWK
 import eu.europa.ec.eudi.verifier.endpoint.domain.OpenId4VPSpec
+import eu.europa.ec.eudi.verifier.endpoint.port.input.GetClientMetadataLive
 import net.minidev.json.JSONObject
 import java.net.URL
 import java.util.*
@@ -79,9 +80,21 @@ class CreateJarNimbusTest {
         assertEqualsRequestObjectJWTClaimSet(requestObject, claimSet)
 
         assertTrue { claimSet.claims.containsKey("client_metadata") }
-        val clientMetadata = OIDCClientMetadata.parse(JSONObject(claimSet.getJSONObjectClaim("client_metadata")))
+        val rawClientMetadata = claimSet.getJSONObjectClaim("client_metadata")
+        assertEquals(rawClientMetadata[OpenId4VPSpec.VP_FORMATS], rawClientMetadata[OpenId4VPSpec.VP_FORMATS_SUPPORTED])
+        val clientMetadata = OIDCClientMetadata.parse(JSONObject(rawClientMetadata))
         assertNull(clientMetadata.jwkSetURI)
         assertEquals(JWKSet(ecPublicKey.jwk()).toPublicJWKSet(), clientMetadata.jwkSet)
+    }
+
+    @Test
+    fun `client metadata exposes both vp format field names`() {
+        val clientMetadata = GetClientMetadataLive(TestContext.verifierConfig).invoke()
+
+        assertEquals(
+            clientMetadata[OpenId4VPSpec.VP_FORMATS],
+            clientMetadata[OpenId4VPSpec.VP_FORMATS_SUPPORTED],
+        )
     }
 
     private fun decode(jwt: String): Result<SignedJWT> {

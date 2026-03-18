@@ -50,6 +50,8 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.persistence.PresentationI
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.presentation.ValidateSdJwtVcOrMsoMdocVerifiablePresentation
 import eu.europa.ec.eudi.verifier.endpoint.domain.*
 import eu.europa.ec.eudi.verifier.endpoint.port.input.*
+import eu.europa.ec.eudi.verifier.endpoint.port.out.callback.BackendWalletResponsePostedNotifier
+import eu.europa.ec.eudi.verifier.endpoint.port.out.callback.NotifyWalletResponsePosted
 import eu.europa.ec.eudi.verifier.endpoint.port.out.cfg.CreateQueryWalletResponseRedirectUri
 import eu.europa.ec.eudi.verifier.endpoint.port.out.cfg.GenerateResponseCode
 import io.ktor.client.*
@@ -200,7 +202,14 @@ internal fun beans(clock: Clock) = beans {
     }
 
     bean { GenerateResponseCode.Random }
-    bean { PostWalletResponseLive(ref(), ref(), ref(), clock, ref(), ref(), ref(), ref(), ref()) }
+    bean<NotifyWalletResponsePosted> {
+        BackendWalletResponsePostedNotifier.fromConfigOrNoop(
+            env.getProperty("AUTHBOUND_BACKEND_URL") ?: env.getProperty("authbound.backend.url"),
+            env.getProperty("AUTHBOUND_BACKEND_INTERNALTOKEN")
+                ?: env.getProperty("authbound.backend.internaltoken"),
+        )
+    }
+    bean { PostWalletResponseLive(ref(), ref(), ref(), clock, ref(), ref(), ref(), ref(), ref(), ref()) }
     bean { GenerateEphemeralEncryptionKeyPairNimbus }
     bean { GetWalletResponseLive(clock, ref(), ref()) }
     bean { GetPresentationEventsLive(ref(), ref()) }
@@ -470,7 +479,7 @@ private fun Environment.clientMetaData(): ClientMetaData {
     val authorizationEncryptedResponseEnc =
         getProperty("verifier.clientMetadata.authorizationEncryptedResponseEnc")
 
-    val defaultJarmOption = ParseJarmOptionNimbus(null, JWEAlgorithm.ECDH_ES.name, EncryptionMethod.A256GCM.name)
+    val defaultJarmOption = ParseJarmOptionNimbus(null, JWEAlgorithm.ECDH_ES.name, EncryptionMethod.A128GCM.name)
     checkNotNull(defaultJarmOption)
 
     val vpFormats = VpFormats(

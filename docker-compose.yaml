@@ -10,7 +10,10 @@ services:
       - "8080:8080"
     environment:
       VERIFIER_PUBLICURL: "https://verifier.authbound.io"
-      VERIFIER_RESPONSE_MODE: "DirectPost"
+      VERIFIER_RESPONSE_MODE: "DirectPostJwt"
+      # Native backend dev defaults to port 3008; override when targeting a containerized backend.
+      AUTHBOUND_BACKEND_URL: "${AUTHBOUND_BACKEND_URL:-http://host.docker.internal:3008}"
+      AUTHBOUND_BACKEND_INTERNALTOKEN: "${INTERNAL_SERVICE_TOKEN:-}"
     labels:
       # Caddy Docker Proxy labels for routing
       - caddy.enable=true

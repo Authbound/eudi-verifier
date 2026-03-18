@@ -664,7 +664,7 @@ Variable: `VERIFIER_CLIENTMETADATA_AUTHORIZATIONENCRYPTEDRESPONSEENC`
 Description: Accept only Authorization Responses that are _encrypted_ using this method  
 Possible values: Any `Algorithm Name` of an IANA registered asymmetric encryption method (i.e. Usage is `enc`):
 https://www.iana.org/assignments/jose/jose.xhtml#web-signature-encryption-algorithms    
-Default value: `A128CBC-HS256`
+Default value: `A128GCM`
 
 Variable: `VERIFIER_CLIENTMETADATA_VPFORMATS_SDJWTVC_SDJWTALGORITHMS`  
 Description: Comma separated list of signature algorithms the Issuer Signed JWT of an SD-JWT VC can be signed with     

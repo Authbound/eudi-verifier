@@ -66,7 +66,7 @@ object TestContext {
         idTokenEncryptedResponseAlg = JWEAlgorithm.RSA_OAEP_256.name,
         idTokenEncryptedResponseEnc = EncryptionMethod.A128CBC_HS256.name,
         subjectSyntaxTypesSupported = listOf("urn:ietf:params:oauth:jwk-thumbprint", "did:example", "did:key"),
-        jarmOption = ParseJarmOptionNimbus(null, JWEAlgorithm.ECDH_ES.name, "A256GCM")!!,
+        jarmOption = ParseJarmOptionNimbus(null, JWEAlgorithm.ECDH_ES.name, "A128GCM")!!,
         vpFormats = VpFormats(
             VpFormat.SdJwtVc(nonEmptyListOf(JWSAlgorithm.ES256), nonEmptyListOf(JWSAlgorithm.ES256, JWSAlgorithm.RS256)),
             VpFormat.MsoMdoc(nonEmptyListOf(JWSAlgorithm.ES256)),

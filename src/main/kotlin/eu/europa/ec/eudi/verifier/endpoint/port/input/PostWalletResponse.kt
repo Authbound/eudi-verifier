@@ -34,6 +34,7 @@ import eu.europa.ec.eudi.verifier.endpoint.domain.Presentation.RequestObjectRetr
 import eu.europa.ec.eudi.verifier.endpoint.domain.Presentation.Submitted
 import eu.europa.ec.eudi.verifier.endpoint.port.out.cfg.CreateQueryWalletResponseRedirectUri
 import eu.europa.ec.eudi.verifier.endpoint.port.out.cfg.GenerateResponseCode
+import eu.europa.ec.eudi.verifier.endpoint.port.out.callback.NotifyWalletResponsePosted
 import eu.europa.ec.eudi.verifier.endpoint.port.out.jose.VerifyJarmJwtSignature
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.LoadPresentationByRequestId
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.PresentationEvent
@@ -43,6 +44,7 @@ import eu.europa.ec.eudi.verifier.endpoint.port.out.presentation.ValidateVerifia
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
+import org.slf4j.LoggerFactory
 import java.time.Clock
 import java.util.regex.Pattern
 
@@ -184,7 +186,7 @@ private suspend fun AuthorisationResponseTO.dcqlVpContent(
         ensureNotNull(vpToken) { WalletResponseValidationError.MissingVpToken }
         ensure(presentationSubmission == null) { WalletResponseValidationError.PresentationSubmissionMustNotBePresent }
 
-        suspend fun JsonElement.toVerifiablePresentations(): Map<QueryId, VerifiablePresentation> {
+        suspend fun JsonElement.toVerifiablePresentations(): Map<QueryId, NonEmptyList<VerifiablePresentation>> {
             val vpToken = runCatching {
                 Json.decodeFromJsonElement<Map<QueryId, JsonElement>>(this)
             }.getOrElse { raise(WalletResponseValidationError.InvalidVpToken) }
@@ -192,13 +194,21 @@ private suspend fun AuthorisationResponseTO.dcqlVpContent(
             val credentialQueries = query.credentials.associateBy { it.id }
             return vpToken.mapValues { (queryId, value) ->
                 val format = credentialQueries[queryId]?.format ?: raise(WalletResponseValidationError.InvalidVpToken)
-                val unvalidatedVerifiablePresentation = value.toVerifiablePresentation(format).bind()
+                val vpFormat = vpFormats.vpFormat(format, WalletResponseValidationError.InvalidVpToken).bind()
                 val applicableTransactionData = transactionData?.filter {
                     queryId.value in it.credentialIds
                 }?.toNonEmptyListOrNull()
-                val vpFormat = vpFormats.vpFormat(format, WalletResponseValidationError.InvalidVpToken).bind()
-                validateVerifiablePresentation(unvalidatedVerifiablePresentation, vpFormat, nonce, applicableTransactionData)
-                    .getOrElse { raise(WalletResponseValidationError.InvalidVpToken) }
+
+                val presentations = when (value) {
+                    is JsonArray -> value
+                    else -> JsonArray(listOf(value))
+                }.map { candidate ->
+                    val unvalidatedVerifiablePresentation = candidate.toVerifiablePresentation(format).bind()
+                    validateVerifiablePresentation(unvalidatedVerifiablePresentation, vpFormat, nonce, applicableTransactionData)
+                        .getOrElse { raise(WalletResponseValidationError.InvalidVpToken) }
+                }.toNonEmptyListOrNull() ?: raise(WalletResponseValidationError.InvalidVpToken)
+
+                presentations
             }
         }
 
@@ -301,6 +311,7 @@ class PostWalletResponseLive(
     private val createQueryWalletResponseRedirectUri: CreateQueryWalletResponseRedirectUri,
     private val publishPresentationEvent: PublishPresentationEvent,
     private val validateVerifiablePresentation: ValidateVerifiablePresentation,
+    private val notifyWalletResponsePosted: NotifyWalletResponsePosted,
 ) : PostWalletResponse {
 
     override suspend operator fun invoke(
@@ -408,6 +419,10 @@ class PostWalletResponseLive(
         val event =
             PresentationEvent.WalletResponsePosted(p.id, p.submittedAt, p.walletResponse.toTO(), accepted)
         publishPresentationEvent(event)
+        runCatching { notifyWalletResponsePosted(p.id, p.walletResponse.toTO()) }
+            .onFailure { error ->
+                logger.warn("Failed to notify Authbound backend about wallet response for tx {}", p.id.value, error)
+            }
     }
 
     private suspend fun logFailure(p: Presentation, cause: WalletResponseValidationError) {
@@ -415,6 +430,8 @@ class PostWalletResponseLive(
         publishPresentationEvent(event)
     }
 }
+
+private val logger = LoggerFactory.getLogger(PostWalletResponseLive::class.java)
 
 /**
  * Gets the [ResponseModeOption] that corresponds to the receiver [AuthorisationResponse].
@@ -424,7 +441,7 @@ private fun AuthorisationResponse.responseMode(): ResponseModeOption = when (thi
     is AuthorisationResponse.DirectPostJwt -> ResponseModeOption.DirectPostJwt
 }
 
-private fun DCQL.satisfiedBy(response: Map<QueryId, VerifiablePresentation>): Boolean =
+private fun DCQL.satisfiedBy(response: Map<QueryId, NonEmptyList<VerifiablePresentation>>): Boolean =
     credentialSets?.filter { credentialSet -> credentialSet.required ?: true }
         ?.map { credentialSet -> credentialSet.options.any { option -> response.keys.containsAll(option) } }
         ?.fold(true, Boolean::and)

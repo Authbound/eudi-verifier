@@ -206,6 +206,30 @@ internal class WalletResponseDirectPostWithIdTokenAndVpTokenTest {
 
     @Test
     @Order(value = 5)
+    fun `presentation with dcql query accepts array-valued dcql response`() = runTest {
+        val initTransaction = VerifierApiClient.loadInitTransactionTO("04-dcql.json")
+        val transactionInitialized = VerifierApiClient.initTransaction(client, initTransaction)
+        val presentationId = TransactionId(transactionInitialized.transactionId)
+        val requestId = RequestId(transactionInitialized.requestUri?.removePrefix("http://localhost:0/wallet/request.jwt/")!!)
+        WalletApiClient.getRequestObject(client, transactionInitialized.requestUri!!)
+
+        val formEncodedBody: MultiValueMap<String, Any> = LinkedMultiValueMap()
+        formEncodedBody.add("state", requestId.value)
+        formEncodedBody.add("id_token", "value 1")
+        formEncodedBody.add("vp_token", TestUtils.loadResource("04-vpToken-array.json"))
+
+        WalletApiClient.directPost(client, requestId, formEncodedBody)
+
+        val response = assertNotNull(VerifierApiClient.getWalletResponse(client, presentationId))
+
+        val vpToken = assertNotNull(response.vpToken)
+        assertEquals(2, vpToken.size)
+        assertIs<JsonPrimitive>(vpToken[0])
+        assertIs<JsonObject>(vpToken[1])
+    }
+
+    @Test
+    @Order(value = 6)
     fun `presentation with presentation exchange query rejects dcql response`() = runTest {
         val initTransaction = VerifierApiClient.loadInitTransactionTO("03-presentationDefinition.json")
         val transactionInitialized = VerifierApiClient.initTransaction(client, initTransaction)
@@ -226,7 +250,7 @@ internal class WalletResponseDirectPostWithIdTokenAndVpTokenTest {
     }
 
     @Test
-    @Order(value = 6)
+    @Order(value = 7)
     fun `presentation with dcql query rejects presentation exchange response`() = runTest {
         val initTransaction = VerifierApiClient.loadInitTransactionTO("04-dcql.json")
         val transactionInitialized = VerifierApiClient.initTransaction(client, initTransaction)
@@ -248,7 +272,7 @@ internal class WalletResponseDirectPostWithIdTokenAndVpTokenTest {
     }
 
     @Test
-    @Order(value = 7)
+    @Order(value = 8)
     fun `presentation with dcql query rejects dcql response when credential sets are not satisfied`() = runTest {
         val initTransaction = VerifierApiClient.loadInitTransactionTO("05-dcql.json")
         val transactionInitialized = VerifierApiClient.initTransaction(client, initTransaction)
@@ -269,7 +293,7 @@ internal class WalletResponseDirectPostWithIdTokenAndVpTokenTest {
     }
 
     @Test
-    @Order(value = 8)
+    @Order(value = 9)
     fun `presentation with dcql query accepts dcql response when all required credential sets are satisfied`() = runTest {
         val initTransaction = VerifierApiClient.loadInitTransactionTO("05-dcql.json")
         val transactionInitialized = VerifierApiClient.initTransaction(client, initTransaction)

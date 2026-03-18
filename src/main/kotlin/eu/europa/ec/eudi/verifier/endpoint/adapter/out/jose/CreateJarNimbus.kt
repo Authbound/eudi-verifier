@@ -169,7 +169,9 @@ class CreateJarNimbus : CreateJar {
                 c.jarmOption.encryptionMethod?.let { setCustomField("authorization_encrypted_response_enc", it) }
             }
 
-            setCustomField(OpenId4VPSpec.VP_FORMATS, c.vpFormats.toJsonObject().toJackson())
+            val vpFormats = c.vpFormats.toJsonObject().toJackson()
+            setCustomField(OpenId4VPSpec.VP_FORMATS, vpFormats)
+            setCustomField(OpenId4VPSpec.VP_FORMATS_SUPPORTED, vpFormats)
         }
     }
 }

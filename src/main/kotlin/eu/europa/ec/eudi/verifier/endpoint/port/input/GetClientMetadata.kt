@@ -34,7 +34,9 @@ internal class GetClientMetadataLive(
     override fun invoke(): JsonObject =
         with(verifierConfig.clientMetaData) {
             buildJsonObject {
-                put("vp_formats", vpFormats.toJsonObject())
+                val vpFormatsJson = vpFormats.toJsonObject()
+                put("vp_formats", vpFormatsJson)
+                put("vp_formats_supported", vpFormatsJson)
             }
         }
 }

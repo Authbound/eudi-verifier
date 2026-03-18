@@ -60,7 +60,7 @@ import kotlin.test.*
         "verifier.response.mode=DirectPostJwt",
         "verifier.clientMetadata.authorizationSignedResponseAlg=",
         "verifier.clientMetadata.authorizationEncryptedResponseAlg=ECDH-ES",
-        "verifier.clientMetadata.authorizationEncryptedResponseEnc=A256GCM",
+        "verifier.clientMetadata.authorizationEncryptedResponseEnc=A128GCM",
         "verifier.jwk.embed=ByValue",
     ],
 )
@@ -111,7 +111,7 @@ internal class WalletResponseDirectPostJwtValidationsDisabledTest {
 
             val jarmOption = assertIs<JarmOption.Encrypted>(requestObjectJsonResponse.jarmOption())
             val ecKey = requestObjectJsonResponse.ecKey()
-            assertEquals(JarmOption.Encrypted("ECDH-ES", "A256GCM"), jarmOption)
+            assertEquals(JarmOption.Encrypted("ECDH-ES", "A128GCM"), jarmOption)
             assertNotNull(ecKey)
 
             // (wallet) generate JWT with claims
@@ -193,7 +193,7 @@ internal class WalletResponseDirectPostJwtValidationsDisabledTest {
 
         val jarmOption = assertIs<JarmOption.Encrypted>(requestObjectJsonResponse.jarmOption())
         val ecKey = requestObjectJsonResponse.ecKey()
-        assertEquals(JarmOption.Encrypted("ECDH-ES", "A256GCM"), jarmOption)
+        assertEquals(JarmOption.Encrypted("ECDH-ES", "A128GCM"), jarmOption)
         assertNotNull(ecKey)
 
         // (wallet)
@@ -222,7 +222,7 @@ internal class WalletResponseDirectPostJwtValidationsDisabledTest {
         "verifier.response.mode=DirectPostJwt",
         "verifier.clientMetadata.authorizationSignedResponseAlg=",
         "verifier.clientMetadata.authorizationEncryptedResponseAlg=ECDH-ES",
-        "verifier.clientMetadata.authorizationEncryptedResponseEnc=A256GCM",
+        "verifier.clientMetadata.authorizationEncryptedResponseEnc=A128GCM",
         "verifier.jwk.embed=ByValue",
     ],
 )
@@ -239,7 +239,7 @@ internal class WalletResponseDirectPostJwtValidationsEnabledTest {
         val requestObject = WalletApiClient.getRequestObjectJsonResponse(client, transactionDetails.requestUri!!)
 
         val jarmOption = assertIs<JarmOption.Encrypted>(requestObject.jarmOption())
-        assertEquals(JarmOption.Encrypted("ECDH-ES", "A256GCM"), jarmOption)
+        assertEquals(JarmOption.Encrypted("ECDH-ES", "A128GCM"), jarmOption)
         val ecKey = assertNotNull(requestObject.ecKey())
 
         val requestId = RequestId(transactionDetails.requestUri?.removePrefix("http://localhost:0/wallet/request.jwt/")!!)
