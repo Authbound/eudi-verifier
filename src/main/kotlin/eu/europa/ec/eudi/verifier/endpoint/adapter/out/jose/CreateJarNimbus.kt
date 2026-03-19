@@ -155,7 +155,9 @@ class CreateJarNimbus : CreateJar {
                 )
             }
 
-            setCustomField(OpenId4VPSpec.VP_FORMATS_SUPPORTED, c.vpFormatsSupported.toJackson())
+            val vpFormats = c.vpFormatsSupported.toJackson()
+            setCustomField(OpenId4VPSpec.VP_FORMATS, vpFormats)
+            setCustomField(OpenId4VPSpec.VP_FORMATS_SUPPORTED, vpFormats)
         }
     }
 }

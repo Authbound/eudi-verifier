@@ -204,11 +204,21 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
     //
     registerBean {
         val delegate = bean<PresentationRedisRepo>().publishPresentationEvent
-        val backendUrl = env.getProperty("authbound.backend.url")?.trim()?.trimEnd('/')
-        val internalToken = env.getProperty("authbound.backend.internalToken")?.trim()
+        val backendUrl =
+            (
+                env.getProperty("AUTHBOUND_BACKEND_URL")
+                    ?: env.getProperty("authbound.backend.url")
+                )?.trim()?.trimEnd('/')
+        val internalToken =
+            (
+                env.getProperty("AUTHBOUND_BACKEND_INTERNALTOKEN")
+                    ?: env.getProperty("authbound.backend.internalToken")
+                )?.trim()
 
         if (backendUrl.isNullOrBlank() || internalToken.isNullOrBlank()) {
-            log.info("Authbound backend callback disabled (authbound.backend.url/authbound.backend.internalToken not set)")
+            log.info(
+                "Authbound backend callback disabled (AUTHBOUND_BACKEND_URL/authbound.backend.url or AUTHBOUND_BACKEND_INTERNALTOKEN/authbound.backend.internalToken not set)",
+            )
             delegate
         } else {
             log.info("Enabling Authbound backend callback notifications to {}", backendUrl)

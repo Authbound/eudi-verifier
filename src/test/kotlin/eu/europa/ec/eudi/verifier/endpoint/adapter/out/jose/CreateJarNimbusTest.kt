@@ -83,7 +83,9 @@ class CreateJarNimbusTest {
         assertEqualsRequestObjectJWTClaimSet(requestObject, claimSet)
 
         assertTrue { claimSet.claims.containsKey("client_metadata") }
-        val clientMetadata = OIDCClientMetadata.parse(JSONObject(claimSet.getJSONObjectClaim("client_metadata")))
+        val rawClientMetadata = claimSet.getJSONObjectClaim("client_metadata")
+        assertEquals(rawClientMetadata[OpenId4VPSpec.VP_FORMATS], rawClientMetadata[OpenId4VPSpec.VP_FORMATS_SUPPORTED])
+        val clientMetadata = OIDCClientMetadata.parse(JSONObject(rawClientMetadata))
         assertNull(clientMetadata.jwkSetURI)
         assertEquals(JWKSet(ecKey).toPublicJWKSet(), clientMetadata.jwkSet)
     }
