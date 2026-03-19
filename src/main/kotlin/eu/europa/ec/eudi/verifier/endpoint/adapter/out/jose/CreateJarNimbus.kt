@@ -15,7 +15,6 @@
  */
 package eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose
 
-import arrow.core.Either
 import arrow.core.flatMap
 import com.nimbusds.jose.*
 import com.nimbusds.jose.crypto.ECDHEncrypter
@@ -26,20 +25,21 @@ import com.nimbusds.jose.jwk.ECKey
 import com.nimbusds.jose.jwk.JWKSet
 import com.nimbusds.jose.jwk.OctetKeyPair
 import com.nimbusds.jose.jwk.RSAKey
-import com.nimbusds.jose.util.Base64
 import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.SignedJWT
 import com.nimbusds.oauth2.sdk.AuthorizationRequest
+import com.nimbusds.oauth2.sdk.ResponseMode
 import com.nimbusds.oauth2.sdk.ResponseType
 import com.nimbusds.oauth2.sdk.Scope
 import com.nimbusds.oauth2.sdk.id.ClientID
 import com.nimbusds.oauth2.sdk.id.State
 import com.nimbusds.openid.connect.sdk.rp.OIDCClientMetadata
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.json.toJackson
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.dropRootCAIfPresent
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.metadata.toJsonObject
 import eu.europa.ec.eudi.verifier.endpoint.domain.*
 import eu.europa.ec.eudi.verifier.endpoint.port.out.jose.CreateJar
-import com.nimbusds.oauth2.sdk.ResponseMode as NimbusResponseMode
+import java.time.Clock
+import java.util.*
 
 /**
  * An implementation of [CreateJar] that uses Nimbus SDK
@@ -52,9 +52,10 @@ class CreateJarNimbus : CreateJar {
         presentation: Presentation.Requested,
         walletNonce: String?,
         walletJarEncryptionRequirement: EncryptionRequirement,
-    ): Either<Throwable, Jwt> {
+    ): Result<Jwt> {
         val requestObject = requestObjectFromDomain(verifierConfig, clock, presentation)
-        val signedJar = sign(verifierConfig.clientMetaData, presentation.responseMode, requestObject, walletNonce)
+        val jarmEncryptionEphemeralKey = presentation.jarmEncryptionEphemeralKey
+        val signedJar = sign(verifierConfig.clientMetaData, jarmEncryptionEphemeralKey, requestObject, walletNonce)
         return when (walletJarEncryptionRequirement) {
             EncryptionRequirement.NotRequired -> signedJar.map { it.serialize() }
             is EncryptionRequirement.Required -> signedJar.flatMap { encrypt(walletJarEncryptionRequirement, it) }.map { it.serialize() }
@@ -63,35 +64,30 @@ class CreateJarNimbus : CreateJar {
 
     internal fun sign(
         clientMetaData: ClientMetaData,
-        responseMode: ResponseMode,
+        jarmEncryptionEphemeralKey: EphemeralEncryptionKeyPairJWK?,
         requestObject: RequestObject,
         walletNonce: String?,
-    ): Either<Throwable, SignedJWT> = Either.catch {
-        val signingConfig = requestObject.verifierId.jarSigning
-        val (key, algorithm) = signingConfig
-        val signer = signingConfig.signer ?: DefaultJWSSignerFactory().createJWSSigner(key, algorithm)
+    ): Result<SignedJWT> = runCatching {
+        val (key, algorithm) = requestObject.verifierId.jarSigning
         val header = JWSHeader.Builder(algorithm)
             .apply {
                 when (requestObject.verifierId) {
                     is VerifierId.PreRegistered -> keyID(key.keyID)
-                    is VerifierId.X509SanDns, is VerifierId.X509Hash -> {
-                        val chain = signingConfig.certificateChain
-                            ?: error("signing key must contain a certificate chain")
-                        x509CertChain(chain.dropRootCAIfPresent().map { Base64.encode(it.encoded) })
-                    }
+                    is VerifierId.X509SanDns, is VerifierId.X509SanUri -> x509CertChain(key.x509CertChain)
                 }
             }
             .type(JOSEObjectType(RFC9101.REQUEST_OBJECT_MEDIA_SUBTYPE))
             .build()
-        val claimSet = asClaimSet(toNimbus(clientMetaData, responseMode), requestObject, walletNonce)
+        val responseMode = requestObject.responseMode
+        val claimSet = asClaimSet(toNimbus(clientMetaData, responseMode, jarmEncryptionEphemeralKey), requestObject, walletNonce)
 
-        SignedJWT(header, claimSet).apply { sign(signer) }
+        SignedJWT(header, claimSet).apply { sign(DefaultJWSSignerFactory().createJWSSigner(key, algorithm)) }
     }
 
     internal fun encrypt(
         walletJarEncryptionRequirement: EncryptionRequirement.Required,
         signed: SignedJWT,
-    ): Either<Throwable, JWEObject> = Either.catch {
+    ): Result<JWEObject> = runCatching {
         val (walletJarEncryptionKey, encryptionAlgorithm, encryptionMethod) = walletJarEncryptionRequirement
         val encrypter = when (walletJarEncryptionKey) {
             is RSAKey -> RSAEncrypter(walletJarEncryptionKey)
@@ -119,10 +115,8 @@ class CreateJarNimbus : CreateJar {
 
         val authorizationRequestClaims = with(AuthorizationRequest.Builder(responseType, clientId)) {
             state(state)
-            if (scope.isNotEmpty()) {
-                scope(scope)
-            }
-            responseMode(NimbusResponseMode(r.responseMode))
+            scope(scope)
+            responseMode(ResponseMode(r.responseMode))
             build()
         }.toJWTClaimsSet()
 
@@ -130,11 +124,22 @@ class CreateJarNimbus : CreateJar {
             fun optionalClaim(c: String, v: Any?) {
                 v?.let { claim(c, it) }
             }
-            issueTime(r.issuedAt.toJavaDate())
+            issueTime(Date.from(r.issuedAt))
             audience(r.aud)
-            claim(OpenId4VPSpec.NONCE, r.nonce)
-            optionalClaim(OpenId4VPSpec.CLIENT_METADATA, clientMetaData?.toJSONObject())
+            claim("nonce", r.nonce)
+            optionalClaim(
+                "id_token_type",
+                if (r.idTokenType.isEmpty()) {
+                    null
+                } else r.idTokenType.joinToString(" "),
+            )
+            optionalClaim(
+                OpenId4VPSpec.PRESENTATION_DEFINITION,
+                r.presentationDefinition?.let { PresentationDefinitionJackson.toJsonObject(it) },
+            )
+            optionalClaim("client_metadata", clientMetaData?.toJSONObject())
             optionalClaim(OpenId4VPSpec.RESPONSE_URI, r.responseUri?.toExternalForm())
+            optionalClaim(OpenId4VPSpec.PRESENTATION_DEFINITION_URI, r.presentationDefinitionUri?.toExternalForm())
             optionalClaim(OpenId4VPSpec.DCQL_QUERY, r.dcqlQuery?.toJackson())
             optionalClaim(OpenId4VPSpec.TRANSACTION_DATA, r.transactionData?.toJackson())
             optionalClaim(OpenId4VPSpec.WALLET_NONCE, walletNonce)
@@ -144,18 +149,29 @@ class CreateJarNimbus : CreateJar {
 
     private fun toNimbus(
         c: ClientMetaData,
-        responseMode: ResponseMode,
+        responseMode: String,
+        ecPublicKey: EphemeralEncryptionKeyPairJWK?,
     ): OIDCClientMetadata {
+        val jwkSet = if (ecPublicKey != null) {
+            JWKSet(listOf(ecPublicKey.jwk())).toPublicJWKSet()
+        } else null
+
         return OIDCClientMetadata().apply {
-            if (responseMode is ResponseMode.DirectPostJwt) {
-                jwkSet = JWKSet(listOf(responseMode.ephemeralResponseEncryptionKey)).toPublicJWKSet()
-                setCustomField(
-                    OpenId4VPSpec.ENCRYPTED_RESPONSE_ENC_VALUES_SUPPORTED,
-                    c.responseEncryptionOption.encryptionMethods.map { it.name }.toList(),
-                )
+            idTokenJWSAlg = JWSAlgorithm.parse(c.idTokenSignedResponseAlg)
+            idTokenJWEAlg = JWEAlgorithm.parse(c.idTokenEncryptedResponseAlg)
+            idTokenJWEEnc = EncryptionMethod.parse(c.idTokenEncryptedResponseEnc)
+            jwkSet?.let { this.jwkSet = it }
+            setCustomField("subject_syntax_types_supported", c.subjectSyntaxTypesSupported)
+
+            if (OpenId4VPSpec.DIRECT_POST_JWT == responseMode) {
+                c.jarmOption.jwsAlg?.let { setCustomField("authorization_signed_response_alg", it) }
+                c.jarmOption.jweAlg?.let { setCustomField("authorization_encrypted_response_alg", it) }
+                c.jarmOption.encryptionMethod?.let { setCustomField("authorization_encrypted_response_enc", it) }
             }
 
-            setCustomField(OpenId4VPSpec.VP_FORMATS_SUPPORTED, c.vpFormatsSupported.toJackson())
+            val vpFormats = c.vpFormats.toJsonObject().toJackson()
+            setCustomField(OpenId4VPSpec.VP_FORMATS, vpFormats)
+            setCustomField(OpenId4VPSpec.VP_FORMATS_SUPPORTED, vpFormats)
         }
     }
 }

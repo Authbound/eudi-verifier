@@ -15,12 +15,10 @@
  */
 package eu.europa.ec.eudi.verifier.endpoint.port.input
 
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.json.jsonSupport
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.metadata.toJsonObject
 import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierConfig
-import eu.europa.ec.eudi.verifier.endpoint.domain.VpFormatsSupported
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonObject
 
 /**
  * Gets the Client Metadata of the Verifier Endpoint encoded as a JsonObject.
@@ -36,11 +34,7 @@ internal class GetClientMetadataLive(
     override fun invoke(): JsonObject =
         with(verifierConfig.clientMetaData) {
             buildJsonObject {
-                val vpFormatsJson = jsonSupport.encodeToJsonElement(
-                    VpFormatsSupported.serializer(),
-                    vpFormatsSupported,
-                ).jsonObject
-                // Provide both keys for compatibility with wallet implementations.
+                val vpFormatsJson = vpFormats.toJsonObject()
                 put("vp_formats", vpFormatsJson)
                 put("vp_formats_supported", vpFormatsJson)
             }
