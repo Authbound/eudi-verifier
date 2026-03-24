@@ -98,10 +98,6 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
-    labels:
-      - caddy=verifier.${DOMAIN}
-      - caddy.reverse_proxy={{upstreams 8080}}
-
 volumes:
   redis_data:
 
