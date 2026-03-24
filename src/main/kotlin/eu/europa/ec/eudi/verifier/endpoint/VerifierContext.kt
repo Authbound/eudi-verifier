@@ -26,6 +26,7 @@ import com.nimbusds.jose.jwk.JWK
 import com.nimbusds.jose.jwk.KeyUse
 import com.nimbusds.jose.jwk.gen.ECKeyGenerator
 import com.nimbusds.jose.util.Base64
+import com.nimbusds.jwt.SignedJWT
 import com.sksamuel.aedile.core.asCache
 import com.sksamuel.aedile.core.expireAfterWrite
 import eu.europa.ec.eudi.sdjwt.vc.*
@@ -654,6 +655,86 @@ private fun extractTransactionId(request: ServerHttpRequest): String? {
     }
 }
 
+private data class JwtDebugSummary(
+    val scheme: String?,
+    val tokenKid: String?,
+    val tokenAlg: String?,
+    val tokenTyp: String?,
+    val tokenIss: String?,
+    val tokenAud: List<String>?,
+    val tokenSub: String?,
+    val tokenIat: String?,
+    val tokenExp: String?,
+    val tokenJti: String?,
+    val parseError: String?,
+)
+
+private fun extractJwtDebugSummary(authHeader: String?): JwtDebugSummary {
+    if (authHeader.isNullOrBlank()) {
+        return JwtDebugSummary(
+            scheme = null,
+            tokenKid = null,
+            tokenAlg = null,
+            tokenTyp = null,
+            tokenIss = null,
+            tokenAud = null,
+            tokenSub = null,
+            tokenIat = null,
+            tokenExp = null,
+            tokenJti = null,
+            parseError = "missing authorization header",
+        )
+    }
+
+    val scheme = authHeader.substringBefore(' ').takeIf { it.isNotBlank() }
+    val token = authHeader.substringAfter(' ', "").takeIf { it.isNotBlank() }
+        ?: return JwtDebugSummary(
+            scheme = scheme,
+            tokenKid = null,
+            tokenAlg = null,
+            tokenTyp = null,
+            tokenIss = null,
+            tokenAud = null,
+            tokenSub = null,
+            tokenIat = null,
+            tokenExp = null,
+            tokenJti = null,
+            parseError = "missing bearer token",
+        )
+
+    return try {
+        val jwt = SignedJWT.parse(token)
+        val claims = jwt.jwtClaimsSet
+        JwtDebugSummary(
+            scheme = scheme,
+            tokenKid = jwt.header.keyID,
+            tokenAlg = jwt.header.algorithm?.name,
+            tokenTyp = jwt.header.type?.type,
+            tokenIss = claims.issuer,
+            tokenAud = claims.audience,
+            tokenSub = claims.subject,
+            tokenIat = claims.issueTime?.toInstant()?.toString(),
+            tokenExp = claims.expirationTime?.toInstant()?.toString(),
+            tokenJti = claims.jwtid,
+            parseError = null,
+        )
+    } catch (t: Throwable) {
+        JwtDebugSummary(
+            scheme = scheme,
+            tokenKid = null,
+            tokenAlg = null,
+            tokenTyp = null,
+            tokenIss = null,
+            tokenAud = null,
+            tokenSub = null,
+            tokenIat = null,
+            tokenExp = null,
+            tokenJti = null,
+            parseError = t.message ?: t::class.java.simpleName,
+        )
+    }
+}
+
 private fun jsonAuthEntryPoint(includeErrorDetails: Boolean): ServerAuthenticationEntryPoint =
     ServerAuthenticationEntryPoint { exchange, ex ->
         val request = exchange.request
@@ -661,8 +742,9 @@ private fun jsonAuthEntryPoint(includeErrorDetails: Boolean): ServerAuthenticati
         val authHeader = request.headers.getFirst("Authorization")
         val authScheme = authHeader?.substringBefore(' ')?.lowercase()
         val errorMessage = ex.message ?: "Invalid token"
+        val jwtDebug = extractJwtDebugSummary(authHeader)
         log.warn(
-            "s2s.auth.failed method={} path={} status=401 requestId={} tx_id={} authHeaderPresent={} authScheme={} error={}",
+            "s2s.auth.failed method={} path={} status=401 requestId={} tx_id={} authHeaderPresent={} authScheme={} error={} tokenKid={} tokenAlg={} tokenTyp={} tokenIss={} tokenAud={} tokenSub={} tokenIat={} tokenExp={} tokenJti={} tokenParseError={}",
             request.method?.name() ?: "UNKNOWN",
             request.uri.path,
             requestId,
@@ -670,6 +752,16 @@ private fun jsonAuthEntryPoint(includeErrorDetails: Boolean): ServerAuthenticati
             authHeader != null,
             authScheme ?: "n/a",
             errorMessage,
+            jwtDebug.tokenKid ?: "n/a",
+            jwtDebug.tokenAlg ?: "n/a",
+            jwtDebug.tokenTyp ?: "n/a",
+            jwtDebug.tokenIss ?: "n/a",
+            jwtDebug.tokenAud?.joinToString(",") ?: "n/a",
+            jwtDebug.tokenSub ?: "n/a",
+            jwtDebug.tokenIat ?: "n/a",
+            jwtDebug.tokenExp ?: "n/a",
+            jwtDebug.tokenJti ?: "n/a",
+            jwtDebug.parseError ?: "n/a",
         )
         val responseMessage = if (includeErrorDetails) errorMessage else "Invalid token"
         jsonError(exchange, HttpStatus.UNAUTHORIZED, "unauthorized", responseMessage)
