@@ -11,7 +11,12 @@ services:
       - "8080:8080"
     environment:
       VERIFIER_PUBLICURL: "http://10.0.2.2:8080"
-      VERIFIER_RESPONSE_MODE: "DirectPost"    
+      VERIFIER_RESPONSE_MODE: "DirectPostJwt"
+      VERIFIER_CLIENTIDPREFIX: "${VERIFIER_CLIENTIDPREFIX:-pre-registered}"
+      VERIFIER_ORIGINALCLIENTID: "${VERIFIER_ORIGINALCLIENTID:-Verifier}"
+      VERIFIER_JAR_SIGNING_CERT_CHAIN_SOURCE: "${VERIFIER_JAR_SIGNING_CERT_CHAIN_SOURCE:-Disabled}"
+      VERIFIER_JAR_SIGNING_CERT_CHAIN_FILE: "${VERIFIER_JAR_SIGNING_CERT_CHAIN_FILE:-}"
+      VERIFIER_JAR_SIGNING_CERT_CHAIN_PEM: "${VERIFIER_JAR_SIGNING_CERT_CHAIN_PEM:-}"
       
   verifier-ui:
     image: ghcr.io/eu-digital-identity-wallet/eudi-web-verifier:latest

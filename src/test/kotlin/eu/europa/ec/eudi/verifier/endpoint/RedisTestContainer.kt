@@ -2,7 +2,7 @@ package eu.europa.ec.eudi.verifier.endpoint
 
 import org.springframework.context.ApplicationContextInitializer
 import org.springframework.context.ConfigurableApplicationContext
-import org.springframework.test.context.support.TestPropertyValues
+import org.springframework.boot.test.util.TestPropertyValues
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.utility.DockerImageName
 

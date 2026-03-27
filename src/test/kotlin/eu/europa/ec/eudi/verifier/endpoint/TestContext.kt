@@ -46,6 +46,7 @@ import org.springframework.context.annotation.Primary
 import org.springframework.context.support.GenericApplicationContext
 import org.springframework.core.annotation.AliasFor
 import org.springframework.test.context.ContextConfiguration
+import java.util.LinkedHashMap
 import kotlin.reflect.KClass
 
 object TestContext {
@@ -60,6 +61,8 @@ object TestContext {
             .loadJWK(alias = "verifier", password = "verifier")
             .toECKey()
     }
+    val signingCertificateChain = checkNotNull(ecJwk.parsedX509CertChain)
+    val signingPrivateJwkWithoutCertificateChain: ECKey = ecJwk.withoutCertificateChain()
     private val responseEncryptionOption =
         ResponseEncryptionOption(JWEAlgorithm.ECDH_ES, nonEmptyListOf(EncryptionMethod.A128GCM, EncryptionMethod.A256GCM))
     val clientMetaData = ClientMetaData(
@@ -75,7 +78,12 @@ object TestContext {
             ),
         ),
     )
-    private val jarSigningConfig: SigningConfig = SigningConfig(ecJwk, JWSAlgorithm.ES512)
+    private val jarSigningConfig: SigningConfig =
+        SigningConfig(
+            ecJwk,
+            JWSAlgorithm.ES512,
+            certificateChain = signingCertificateChain,
+        )
     val verifierId = VerifierId.X509SanDns("verifier", jarSigningConfig)
     val createJar: CreateJarNimbus = CreateJarNimbus()
     val signedRequestObjectVerifier: JWSVerifier = ECDSAVerifier(ecJwk)
@@ -104,6 +112,16 @@ object TestContext {
             generateQrCode,
         )
 }
+
+private fun ECKey.withoutCertificateChain(): ECKey =
+    ECKey.parse(
+        LinkedHashMap(toJSONObject()).apply {
+            remove("x5c")
+            remove("x5t")
+            remove("x5t#S256")
+            remove("x5u")
+        },
+    )
 
 /**
  * Meta annotation to be used with integration tests of the application

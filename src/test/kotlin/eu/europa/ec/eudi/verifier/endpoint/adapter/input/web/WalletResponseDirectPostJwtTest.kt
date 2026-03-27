@@ -54,6 +54,7 @@ import org.springframework.http.MediaType
 import org.springframework.test.annotation.DirtiesContext
 import org.springframework.test.context.TestPropertySource
 import org.springframework.test.web.reactive.server.WebTestClient
+import org.springframework.test.web.reactive.server.expectBody
 import org.springframework.util.LinkedMultiValueMap
 import org.springframework.util.MultiValueMap
 import org.springframework.web.reactive.function.BodyInserters

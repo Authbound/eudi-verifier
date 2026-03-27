@@ -192,9 +192,13 @@ data class SigningConfig(
     val key: JWK,
     val algorithm: JWSAlgorithm,
     val signer: JWSSigner? = null,
+    val certificateChain: List<X509Certificate>? = null,
 ) {
     init {
         require(algorithm in JWSAlgorithm.Family.SIGNATURE) { "'${algorithm.name}' is not a valid signature algorithm" }
+        certificateChain?.let {
+            require(it.isNotEmpty()) { "certificateChain must not be empty" }
+        }
 
         if (signer == null) {
             require(key.isPrivate) { "a private key is required for signing" }
@@ -215,12 +219,6 @@ data class SigningConfig(
     val certificate: X509Certificate
         get() = certificateChain?.firstOrNull()
             ?: error("signing key must contain a certificate chain")
-
-    /**
-     * The signing certificate chain, if present.
-     */
-    val certificateChain: List<X509Certificate>?
-        get() = key.parsedX509CertChain?.takeIf { it.isNotEmpty() }
 }
 
 typealias OriginalClientId = String

@@ -21,7 +21,7 @@ import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.SignedJWT
 import eu.europa.ec.eudi.sdjwt.SdJwt
 import eu.europa.ec.eudi.sdjwt.SdJwtAndKbJwt
-import eu.europa.ec.eudi.sdjwt.vc.SdJwtVcSpec
+import eu.europa.ec.eudi.sdjwt.SdJwtVcSpec
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.ProvideTrustSource
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.domain.Clock

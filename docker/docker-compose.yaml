@@ -9,10 +9,16 @@ services:
       - "8080:8080"
     environment:
       VERIFIER_PUBLICURL: "${PUBLIC_URL:-http://localhost}"
-      VERIFIER_RESPONSE_MODE: "DirectPost"
+      VERIFIER_RESPONSE_MODE: "DirectPostJwt"
+      VERIFIER_CLIENTIDPREFIX: "${VERIFIER_CLIENTIDPREFIX:-pre-registered}"
+      VERIFIER_ORIGINALCLIENTID: "${VERIFIER_ORIGINALCLIENTID:-Verifier}"
       SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-dev}"
       SPRING_DATA_REDIS_URL: "${REDIS_URL}"
       SPRING_DATA_REDIS_SSL_ENABLED: "true"
+      VERIFIER_JAR_SIGNING_KEY: "${VERIFIER_JAR_SIGNING_KEY:-GenerateRandom}"
+      VERIFIER_JAR_SIGNING_CERT_CHAIN_SOURCE: "${VERIFIER_JAR_SIGNING_CERT_CHAIN_SOURCE:-Disabled}"
+      VERIFIER_JAR_SIGNING_CERT_CHAIN_FILE: "${VERIFIER_JAR_SIGNING_CERT_CHAIN_FILE:-}"
+      VERIFIER_JAR_SIGNING_CERT_CHAIN_PEM: "${VERIFIER_JAR_SIGNING_CERT_CHAIN_PEM:-}"
       # Optional: push wallet responses to Authbound backend (eliminates polling)
       # Defaults assume backend runs on host (macOS/Windows Docker): http://host.docker.internal:3008
       AUTHBOUND_BACKEND_URL: "${AUTHBOUND_BACKEND_URL:-http://host.docker.internal:3008}"

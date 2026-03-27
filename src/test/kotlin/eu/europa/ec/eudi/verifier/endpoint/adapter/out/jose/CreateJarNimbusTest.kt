@@ -19,6 +19,7 @@ package eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose
 
 import arrow.core.toNonEmptyListOrNull
 import com.nimbusds.jose.JWEAlgorithm
+import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.JWSHeader
 import com.nimbusds.jose.jwk.Curve
 import com.nimbusds.jose.jwk.JWKSet
@@ -33,6 +34,9 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.input.web.TestUtils
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.json.decodeAs
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.json.toJsonObject
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.utils.getOrThrow
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.dropRootCAIfPresent
+import eu.europa.ec.eudi.verifier.endpoint.domain.SigningConfig
+import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierId
 import eu.europa.ec.eudi.verifier.endpoint.domain.DCQL
 import eu.europa.ec.eudi.verifier.endpoint.domain.OpenId4VPSpec
 import eu.europa.ec.eudi.verifier.endpoint.domain.ResponseMode
@@ -88,6 +92,56 @@ class CreateJarNimbusTest {
         val clientMetadata = OIDCClientMetadata.parse(JSONObject(rawClientMetadata))
         assertNull(clientMetadata.jwkSetURI)
         assertEquals(JWKSet(ecKey).toPublicJWKSet(), clientMetadata.jwkSet)
+    }
+
+    @Test
+    fun `given explicit certificate chain, x509_san_dns signing should not depend on x5c embedded in jwk`() {
+        val strippedKey = TestContext.signingPrivateJwkWithoutCertificateChain
+        assertNull(strippedKey.parsedX509CertChain)
+
+        val verifierId = VerifierId.X509SanDns(
+            "verifier",
+            SigningConfig(
+                key = strippedKey,
+                algorithm = JWSAlgorithm.ES512,
+                certificateChain = TestContext.signingCertificateChain,
+            ),
+        )
+        val requestObject = requestObject(verifierId)
+        val responseEncryptionKey = ECKeyGenerator(Curve.P_256)
+            .keyUse(KeyUse.ENCRYPTION)
+            .algorithm(JWEAlgorithm.ECDH_ES)
+            .keyID(UUID.randomUUID().toString())
+            .generate()
+
+        val signedJwt = createJar.sign(clientMetaData, ResponseMode.DirectPostJwt(responseEncryptionKey), requestObject, null)
+            .getOrThrow()
+
+        assertNull(signedJwt.header.keyID)
+        val chain = assertNotNull(signedJwt.header.x509CertChain)
+        val expectedChain = TestContext.signingCertificateChain.dropRootCAIfPresent()
+        assertEquals(expectedChain.size, chain.size)
+        expectedChain.zip(chain).forEach { (expected, actual) ->
+            assertContentEquals(expected.encoded, actual.decode())
+        }
+        assertX5cHeaderClaimDoesNotContainPEM(signedJwt.header)
+        assertTrue(signedJwt.verify(verifier))
+    }
+
+    private fun requestObject(verifierId: VerifierId): RequestObject {
+        val query = Json.decodeFromString<InitTransactionTO>(TestUtils.loadResource("fixtures/eudi/02-dcql.json")).dcqlQuery
+        return RequestObject(
+            verifierId = verifierId,
+            responseType = listOf("vp_token"),
+            dcqlQuery = query,
+            scope = listOf("openid"),
+            nonce = UUID.randomUUID().toString(),
+            responseMode = "direct_post.jwt",
+            responseUri = URL("https://foo"),
+            state = TestContext.testRequestId.value,
+            aud = emptyList(),
+            issuedAt = TestContext.testClock.now(),
+        )
     }
 
     private fun decode(jwt: String): Result<SignedJWT> {

@@ -24,6 +24,7 @@ import java.security.spec.X509EncodedKeySpec
 internal data class KmsSigningMaterial(
     val jwk: ECKey,
     val signer: JWSSigner,
+    val publicKey: ECPublicKey,
 )
 
 internal fun loadKmsSigningMaterial(
@@ -33,12 +34,14 @@ internal fun loadKmsSigningMaterial(
     kidOverride: String?,
 ): KmsSigningMaterial {
     val publicKeyResponse = kms.getPublicKey { it.keyId(keyId) }
-    val jwk = publicKeyResponse.toEcJwk(algorithm, kidOverride)
+    val publicKey = publicKeyResponse.publicKey().toECPublicKey()
+    val jwk = publicKeyResponse.toEcJwk(publicKey, algorithm, kidOverride)
     val signer = AwsKmsSigner(kms, publicKeyResponse.keyId() ?: keyId, algorithm)
-    return KmsSigningMaterial(jwk, signer)
+    return KmsSigningMaterial(jwk, signer, publicKey)
 }
 
 private fun GetPublicKeyResponse.toEcJwk(
+    publicKey: ECPublicKey,
     algorithm: JWSAlgorithm,
     kidOverride: String?,
 ): ECKey {
@@ -49,7 +52,6 @@ private fun GetPublicKeyResponse.toEcJwk(
         "KMS key spec ${keySpec()} is incompatible with JWS algorithm ${algorithm.name}"
     }
 
-    val publicKey = publicKey().toECPublicKey()
     val kid = kidOverride?.takeIf { it.isNotBlank() } ?: keyId()
 
     return ECKey.Builder(curve, publicKey)

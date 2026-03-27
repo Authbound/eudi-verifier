@@ -15,6 +15,7 @@
  */
 package eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509
 
+import java.security.interfaces.ECPublicKey
 import java.security.cert.X509Certificate
 
 fun X509Certificate.isSelfSigned(): Boolean =
@@ -27,3 +28,21 @@ fun X509Certificate.isSelfSigned(): Boolean =
 fun List<X509Certificate>.dropRootCAIfPresent(): List<X509Certificate> =
     if (size > 1 && last().isSelfSigned()) dropLast(1)
     else this
+
+fun X509Certificate.dnsSubjectAlternativeNames(): List<String> =
+    subjectAlternativeNames
+        ?.mapNotNull { san ->
+            val type = san.getOrNull(0) as? Int
+            val value = san.getOrNull(1) as? String
+            value?.takeIf { type == 2 }
+        }
+        .orEmpty()
+
+fun X509Certificate.matchesEcPublicKey(expected: ECPublicKey): Boolean {
+    val actual = publicKey as? ECPublicKey ?: return false
+    return actual.w == expected.w &&
+        actual.params.curve == expected.params.curve &&
+        actual.params.generator == expected.params.generator &&
+        actual.params.order == expected.params.order &&
+        actual.params.cofactor == expected.params.cofactor
+}

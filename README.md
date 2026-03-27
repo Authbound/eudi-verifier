@@ -109,7 +109,7 @@ variables of the service in [docker-compose.yaml](docker/docker-compose.yaml)
       - "8080:8080"
     environment:
       VERIFIER_PUBLICURL: "https://10.240.174.10"
-      VERIFIER_RESPONSE_MODE: "DirectPost"
+      VERIFIER_RESPONSE_MODE: "DirectPostJwt"
       VERIFIER_JAR_SIGNING_KEY_KEYSTORE: file:///keystore.jks
 ```
 
@@ -127,12 +127,40 @@ To provide an external keystore mount it to the path designated by the value of 
       - "8080:8080"
     environment:
       VERIFIER_PUBLICURL: "https://10.240.174.10"
-      VERIFIER_RESPONSE_MODE: "DirectPost"
+      VERIFIER_RESPONSE_MODE: "DirectPostJwt"
       VERIFIER_JAR_SIGNING_KEY_KEYSTORE: file:///certs/keystore.jks
     volumes:
       - <PATH OF KEYSTORE IN HOST MACHINE>/keystore.jks:/certs/keystore.jks
       
 ```
+
+### Use AWS KMS signing with a separate public certificate chain
+When property `VERIFIER_JAR_SIGNING_KEY` is set to `AwsKms`, the verifier signs authorization requests with an AWS KMS key and loads the public certificate chain separately. This is the recommended production model for `x509_san_dns` and `x509_hash` because the private key never leaves KMS.
+
+**Example:**
+```yaml
+  verifier:
+    image: ghcr.io/eu-digital-identity-wallet/eudi-srv-verifier-endpoint:latest
+    container_name: verifier-backend
+    ports:
+      - "8080:8080"
+    environment:
+      VERIFIER_PUBLICURL: "https://eudi-verifier.example.org"
+      VERIFIER_RESPONSE_MODE: "DirectPostJwt"
+      VERIFIER_CLIENTIDPREFIX: "x509_san_dns"
+      VERIFIER_ORIGINALCLIENTID: "eudi-verifier.example.org"
+      VERIFIER_JAR_SIGNING_KEY: "AwsKms"
+      VERIFIER_JAR_SIGNING_KEY_KMS_KEY_ID: "arn:aws:kms:eu-west-1:123456789012:key/00000000-0000-0000-0000-000000000000"
+      VERIFIER_JAR_SIGNING_KEY_KMS_REGION: "eu-west-1"
+      VERIFIER_JAR_SIGNING_KEY_KMS_KID: "eudi-verifier-kms"
+      VERIFIER_JAR_SIGNING_CERT_CHAIN_SOURCE: "File"
+      VERIFIER_JAR_SIGNING_CERT_CHAIN_FILE: "file:///certs/signing-chain.pem"
+    volumes:
+      - <PATH OF CERTIFICATE CHAIN IN HOST MACHINE>/signing-chain.pem:/certs/signing-chain.pem:ro
+```
+
+> [!IMPORTANT]
+> The leaf certificate in `signing-chain.pem` must contain the DNS SAN `eudi-verifier.example.org` for `x509_san_dns`, and its public key must correspond to the configured AWS KMS key.
 
 ## Presentation Flows
 
@@ -573,6 +601,28 @@ Description: Alias of the Key to use for JAR signing, in the configured Keystore
 
 Variable: `VERIFIER_JAR_SIGNING_KEY_PASSWORD`  
 Description: Password of the Key to use for JAR signing, in the configured Keystore
+
+Variable: `VERIFIER_JAR_SIGNING_CERT_CHAIN_SOURCE`
+Description: Source used to load a public certificate chain separately from the signing key
+Possible values: `Disabled`, `File`, `Pem`
+Default value: `Disabled`
+
+Variable: `VERIFIER_JAR_SIGNING_CERT_CHAIN_FILE`
+Description: File or resource location of a PEM encoded public certificate chain, used primarily with `VERIFIER_JAR_SIGNING_KEY=AwsKms`
+Examples: `file:///app/certs/signing-chain.pem`, `classpath:signing-chain.pem`
+
+Variable: `VERIFIER_JAR_SIGNING_CERT_CHAIN_PEM`
+Description: PEM encoded public certificate chain, leaf first, used primarily with `VERIFIER_JAR_SIGNING_KEY=AwsKms`
+
+> [!IMPORTANT]
+> When `VERIFIER_CLIENTIDPREFIX` is `x509_san_dns` or `x509_hash`, the verifier must have access to a certificate chain.
+> With `VERIFIER_JAR_SIGNING_KEY=AwsKms`, the private key stays in AWS KMS and the public certificate chain must be provided separately using one of the variables above.
+
+> [!IMPORTANT]
+> The leaf certificate in that chain must correspond to the AWS KMS public key. A random certificate chain cannot be paired with an arbitrary KMS key.
+
+> [!IMPORTANT]
+> When running outside AWS infrastructure, the AWS SDK default credential chain typically means you must provide `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION` (or another supported credential source) to let the verifier call KMS.
 
 Variable: `VERIFIER_PUBLICURL`  
 Description: Public URL of the Verifier Endpoint application  

@@ -62,6 +62,9 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.security.buildS2sJwtDecod
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.StatusListTokenRedisCache
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.StatusListTokenValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.ParsePemEncodedX509CertificateChainWithNimbus
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.dnsSubjectAlternativeNames
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.isSelfSigned
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.matchesEcPublicKey
 import eu.europa.ec.eudi.verifier.endpoint.domain.*
 import eu.europa.ec.eudi.verifier.endpoint.port.input.*
 import eu.europa.ec.eudi.verifier.endpoint.port.out.cfg.CreateQueryWalletResponseRedirectUri
@@ -124,6 +127,12 @@ private enum class SigningKeyEnum {
     GenerateRandom,
     LoadFromKeystore,
     AwsKms,
+}
+
+private enum class CertificateChainSourceEnum {
+    Disabled,
+    File,
+    Pem,
 }
 
 @OptIn(ExperimentalSerializationApi::class)
@@ -838,6 +847,7 @@ private fun validateKeystoreConfig(environment: Environment) {
 
 private fun jarSigningConfig(environment: Environment, clock: Clock): SigningConfig {
     val prod = isProduction(environment)
+    val clientIdPrefix = environment.clientIdPrefix()
     val signingKeyMode =
         environment.getProperty("verifier.jar.signing.key", SigningKeyEnum::class.java)
             ?: SigningKeyEnum.GenerateRandom
@@ -854,8 +864,8 @@ private fun jarSigningConfig(environment: Environment, clock: Clock): SigningCon
     }
 
     val algorithm = environment.getProperty("verifier.jar.signing.algorithm", "ES256").let(JWSAlgorithm::parse)
-    return when (signingKeyMode) {
-        SigningKeyEnum.LoadFromKeystore -> SigningConfig(loadFromKeystore(environment, prod), algorithm)
+    val signingConfig = when (signingKeyMode) {
+        SigningKeyEnum.LoadFromKeystore -> loadFromKeystore(environment, prod, algorithm)
         SigningKeyEnum.GenerateRandom -> SigningConfig(generateRandom(clock), algorithm)
         SigningKeyEnum.AwsKms -> {
             val kmsConfig = parseKmsConfig(environment)
@@ -867,15 +877,26 @@ private fun jarSigningConfig(environment: Environment, clock: Clock): SigningCon
             )
             val kmsClient = KmsClient.builder().region(kmsConfig.region).build()
             val material = loadKmsSigningMaterial(kmsClient, kmsConfig.keyId, algorithm, kmsConfig.kid)
-            SigningConfig(material.jwk, algorithm, material.signer)
+            val certificateChain = loadCertificateChain(environment)
+            validateKmsCertificateBinding(certificateChain, material.publicKey)
+            SigningConfig(material.jwk, algorithm, material.signer, certificateChain)
         }
     }
+    validateCertificateChainForMode(clientIdPrefix, signingConfig.certificateChain, prod)
+    logSigningCertificateDiagnostics(signingKeyMode, signingConfig.certificateChain)
+    return signingConfig
 }
 
 private data class KmsKeyConfig(
     val keyId: String,
     val region: Region,
     val kid: String?,
+)
+
+private data class CertificateChainConfig(
+    val source: CertificateChainSourceEnum,
+    val file: String?,
+    val pem: String?,
 )
 
 private fun parseKmsConfig(environment: Environment): KmsKeyConfig {
@@ -892,7 +913,85 @@ private fun parseKmsConfig(environment: Environment): KmsKeyConfig {
     return KmsKeyConfig(keyId, Region.of(region), kid)
 }
 
-private fun loadFromKeystore(environment: Environment, prod: Boolean): JWK {
+private fun parseCertificateChainConfig(environment: Environment): CertificateChainConfig {
+    val source =
+        environment.getProperty("verifier.jar.signing.cert.chain.source", CertificateChainSourceEnum::class.java)
+            ?: CertificateChainSourceEnum.Disabled
+    val file = environment.getProperty("verifier.jar.signing.cert.chain.file")?.takeIf { it.isNotBlank() }
+    val pem = environment.getProperty("verifier.jar.signing.cert.chain.pem")?.takeIf { it.isNotBlank() }
+    return CertificateChainConfig(source, file, pem)
+}
+
+private fun Environment.clientIdPrefix(): String = getProperty("verifier.clientIdPrefix", "pre-registered")
+
+private fun loadCertificateChain(environment: Environment): List<X509Certificate>? {
+    val config = parseCertificateChainConfig(environment)
+    return when (config.source) {
+        CertificateChainSourceEnum.Disabled -> null
+        CertificateChainSourceEnum.File -> {
+            val chainLocation = config.file ?: error("Missing required property 'verifier.jar.signing.cert.chain.file'")
+            val resource = DefaultResourceLoader().getResource(chainLocation)
+            require(resource.exists()) {
+                "Could not load certificate chain from '$chainLocation'"
+            }
+            val pem = resource.inputStream.use { it.bufferedReader().readText() }
+            ParsePemEncodedX509CertificateChainWithNimbus(pem).getOrElse { throwable ->
+                error("Failed to parse certificate chain from '$chainLocation': ${throwable.message}")
+            }.all
+        }
+        CertificateChainSourceEnum.Pem -> {
+            val pem = config.pem ?: error("Missing required property 'verifier.jar.signing.cert.chain.pem'")
+            ParsePemEncodedX509CertificateChainWithNimbus(pem).getOrElse { throwable ->
+                error("Failed to parse certificate chain from 'verifier.jar.signing.cert.chain.pem': ${throwable.message}")
+            }.all
+        }
+    }
+}
+
+private fun validateCertificateChainForMode(
+    clientIdPrefix: String,
+    certificateChain: List<X509Certificate>?,
+    prod: Boolean,
+) {
+    val requiresChain = clientIdPrefix == "x509_san_dns" || clientIdPrefix == "x509_hash"
+    if (requiresChain) {
+        require(!certificateChain.isNullOrEmpty()) {
+            "A certificate chain is required for verifier.clientIdPrefix='$clientIdPrefix'"
+        }
+    }
+
+    val leaf = certificateChain?.firstOrNull() ?: return
+    require(!(prod && leaf.isSelfSigned())) {
+        "Self-signed leaf certificates are not allowed in production for verifier.clientIdPrefix='$clientIdPrefix'"
+    }
+}
+
+private fun validateKmsCertificateBinding(
+    certificateChain: List<X509Certificate>?,
+    kmsPublicKey: java.security.interfaces.ECPublicKey,
+) {
+    val leaf = certificateChain?.firstOrNull() ?: return
+    require(leaf.matchesEcPublicKey(kmsPublicKey)) {
+        "The configured certificate chain leaf public key does not match the AWS KMS public key"
+    }
+}
+
+private fun logSigningCertificateDiagnostics(
+    signingKeyMode: SigningKeyEnum,
+    certificateChain: List<X509Certificate>?,
+) {
+    val leaf = certificateChain?.firstOrNull() ?: return
+    log.info(
+        "JAR signing certificate loaded mode={} subject={} sanDns={} expiresAt={} chainLength={}",
+        signingKeyMode,
+        leaf.subjectX500Principal.name,
+        leaf.dnsSubjectAlternativeNames().joinToString(",").ifBlank { "none" },
+        leaf.notAfter.toInstant(),
+        certificateChain.size,
+    )
+}
+
+private fun loadFromKeystore(environment: Environment, prod: Boolean, algorithm: JWSAlgorithm): SigningConfig {
     val keystoreResource = run {
         val keystoreLocation = environment.getRequiredProperty("verifier.jar.signing.key.keystore")
         log.info("Will try to load Keystore from: '{}'", keystoreLocation)
@@ -934,16 +1033,9 @@ private fun loadFromKeystore(environment: Environment, prod: Boolean): JWK {
         val chain = keystore.getCertificateChain(keyAlias)
             ?.mapNotNull { certificate -> certificate as? X509Certificate }
             ?.toNonEmptyListOrNull()
-
-        if (chain != null) {
-            val encodedChain = chain.map { Base64.encode(it.encoded) }
-            when (jwk) {
-                is ECKey -> ECKey.Builder(jwk).x509CertChain(encodedChain).build()
-                else -> jwk
-            }
-        } else {
-            jwk
-        }
+            ?.all
+            ?: error("Could not load certificate chain for alias '$keyAlias'")
+        SigningConfig(jwk, algorithm, certificateChain = chain)
     }
 }
 
@@ -960,7 +1052,7 @@ private fun verifierConfig(environment: Environment, clock: Clock): VerifierConf
         val jarSigning = jarSigningConfig(environment, clock)
 
         val factory =
-            when (val clientIdPrefix = environment.getProperty("verifier.clientIdPrefix", "pre-registered")) {
+            when (val clientIdPrefix = environment.clientIdPrefix()) {
                 "pre-registered" -> VerifierId::PreRegistered
                 "x509_san_dns" -> VerifierId::X509SanDns
                 "x509_hash" -> VerifierId::X509Hash
