@@ -940,12 +940,39 @@ private fun loadCertificateChain(environment: Environment): List<X509Certificate
             }.all
         }
         CertificateChainSourceEnum.Pem -> {
-            val pem = config.pem ?: error("Missing required property 'verifier.jar.signing.cert.chain.pem'")
+            val pem = normalizePemCertificateChain(config.pem ?: error("Missing required property 'verifier.jar.signing.cert.chain.pem'"))
             ParsePemEncodedX509CertificateChainWithNimbus(pem).getOrElse { throwable ->
                 error("Failed to parse certificate chain from 'verifier.jar.signing.cert.chain.pem': ${throwable.message}")
             }.all
         }
     }
+}
+
+private fun normalizePemCertificateChain(raw: String): String {
+    val trimmed = raw.trim()
+    val withoutAssignment =
+        if (trimmed.startsWith("VERIFIER_JAR_SIGNING_CERT_CHAIN_PEM=")) {
+            trimmed.substringAfter('=').trim()
+        } else {
+            trimmed
+        }
+    val withoutOuterQuotes =
+        when {
+            withoutAssignment.length >= 2 &&
+                withoutAssignment.startsWith('"') &&
+                withoutAssignment.endsWith('"') -> withoutAssignment.substring(1, withoutAssignment.length - 1)
+            withoutAssignment.length >= 2 &&
+                withoutAssignment.startsWith('\'') &&
+                withoutAssignment.endsWith('\'') -> withoutAssignment.substring(1, withoutAssignment.length - 1)
+            else -> withoutAssignment
+        }
+
+    return withoutOuterQuotes
+        .replace("\\r\\n", "\n")
+        .replace("\\n", "\n")
+        .replace("\\r", "\r")
+        .replace("\r\n", "\n")
+        .trim()
 }
 
 private fun validateCertificateChainForMode(
