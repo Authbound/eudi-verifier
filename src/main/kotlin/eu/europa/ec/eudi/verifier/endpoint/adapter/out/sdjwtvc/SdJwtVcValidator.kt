@@ -27,13 +27,17 @@ import eu.europa.ec.eudi.sdjwt.*
 import eu.europa.ec.eudi.sdjwt.vc.*
 import eu.europa.ec.eudi.sdjwt.vc.SdJwtVcVerificationError.*
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.ProvideTrustSource
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CValidator
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.issuer.IssuerMetadataJwkSetResolver
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.issuer.IssuerMetadataTrustPolicy
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.StatusCheckException
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.StatusListTokenValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.utils.getOrThrow
 import eu.europa.ec.eudi.verifier.endpoint.domain.Nonce
 import eu.europa.ec.eudi.verifier.endpoint.domain.TransactionId
 import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierId
+import io.ktor.client.HttpClient
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -120,23 +124,21 @@ private val log = LoggerFactory.getLogger(SdJwtVcValidator::class.java)
 
 internal class SdJwtVcValidator(
     private val provideTrustSource: ProvideTrustSource,
+    private val httpClient: HttpClient,
+    private val issuerMetadataTrustPolicy: IssuerMetadataTrustPolicy,
     private val audience: VerifierId,
     private val statusListTokenValidator: StatusListTokenValidator?,
     typeMetadataPolicy: TypeMetadataPolicy,
 ) {
     private val sdJwtVcVerifier: SdJwtVcVerifier<SignedJWT> = run {
-        val x509CertificateTrust = X509CertificateTrust.usingVct { chain: List<X509Certificate>, vct ->
-            val x5CShouldBe = provideTrustSource(vct)
-            if (x5CShouldBe != null) {
-                val x5cValidator = X5CValidator(x5CShouldBe)
-                val x5c = checkNotNull(chain.toNonEmptyListOrNull())
-                x5cValidator.ensureTrusted(x5c).fold(ifLeft = { false }, ifRight = { true })
-            } else {
-                false
-            }
-        }
+        val x509CertificateTrust = x509CertificateTrust(provideTrustSource)
         NimbusSdJwtOps.SdJwtVcVerifier(
-            issuerVerificationMethod = IssuerVerificationMethod.usingX5c(x509CertificateTrust),
+            issuerVerificationMethod = IssuerVerificationMethod.usingCustom(
+                PolicyAwareSdJwtVcJwtSignatureVerifier(
+                    x509CertificateTrust = x509CertificateTrust,
+                    issuerMetadataJwkSetResolver = IssuerMetadataJwkSetResolver(httpClient, issuerMetadataTrustPolicy),
+                ),
+            ),
             typeMetadataPolicy = typeMetadataPolicy,
         )
     }
@@ -226,7 +228,22 @@ internal class SdJwtVcValidator(
                 statusListTokenValidator?.validate(it, transactionId)
                 it
             }
+    }
+}
+
+internal fun x509CertificateTrust(
+    provideTrustSource: ProvideTrustSource,
+): X509CertificateTrust<List<X509Certificate>> = X509CertificateTrust.usingVct { chain: List<X509Certificate>, vct ->
+    val x5CShouldBe = provideTrustSource(vct)
+    when (x5CShouldBe) {
+        null -> false
+        X5CShouldBe.Ignored -> true
+        else -> {
+            val x5cValidator = X5CValidator(x5CShouldBe)
+            val x5c = checkNotNull(chain.toNonEmptyListOrNull())
+            x5cValidator.ensureTrusted(x5c).fold(ifLeft = { false }, ifRight = { true })
         }
+    }
 }
 
 private val Throwable.description: String

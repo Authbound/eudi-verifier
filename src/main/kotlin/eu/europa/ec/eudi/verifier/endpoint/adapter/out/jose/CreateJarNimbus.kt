@@ -157,6 +157,7 @@ class CreateJarNimbus : CreateJar {
 
             val vpFormats = c.vpFormatsSupported.toJackson()
             setCustomField(OpenId4VPSpec.VP_FORMATS, vpFormats)
+            // Older wallets still expect vp_formats_supported even though vp_formats is the newer field.
             setCustomField(OpenId4VPSpec.VP_FORMATS_SUPPORTED, vpFormats)
         }
     }

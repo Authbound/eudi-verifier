@@ -36,11 +36,13 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.input.timer.RefreshTrustSourc
 import eu.europa.ec.eudi.verifier.endpoint.adapter.input.timer.ScheduleDeleteOldPresentations
 import eu.europa.ec.eudi.verifier.endpoint.adapter.input.timer.ScheduleTimeoutPresentations
 import eu.europa.ec.eudi.verifier.endpoint.adapter.input.web.*
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.authbound.AuthboundBackendCallbackPublisher
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.ProvideTrustSource
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.TrustSources
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.authbound.AuthboundBackendCallbackPublisher
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cfg.GenerateRequestIdNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cfg.GenerateTransactionIdNimbus
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.issuer.IssuerMetadataJwkSetResolver
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.issuer.IssuerMetadataTrustPolicy
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.CreateJarNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.GenerateEphemeralEncryptionKeyPairNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.VerifyEncryptedResponseWithNimbus
@@ -205,6 +207,9 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
             createHttpClient(httpProxy = proxy)
         }
     }
+    registerBean {
+        IssuerMetadataTrustPolicy(bean<VerifierConfig>().issuerMetadataAllowedIssuerPatterns)
+    }
 
     // X509
     registerBean { ParsePemEncodedX509CertificateChainWithNimbus }
@@ -321,7 +326,8 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
             }
             val trustSources = bean<TrustSources>()
             val cache = StatusListTokenRedisCache(bean(), bean())
-            StatusListTokenValidator(httpClient, bean(), bean(), trustSources::invoke, cache)
+            val issuerMetadataResolver = IssuerMetadataJwkSetResolver(httpClient, bean())
+            StatusListTokenValidator(httpClient, issuerMetadataResolver, bean(), bean(), trustSources::invoke, cache)
         }
     }
 
@@ -639,6 +645,8 @@ private fun SupplierContextDsl<*>.sdJwtVcValidator(
     provideTrustSource: ProvideTrustSource,
 ): SdJwtVcValidator = SdJwtVcValidator(
     provideTrustSource = provideTrustSource,
+    httpClient = bean(),
+    issuerMetadataTrustPolicy = bean(),
     audience = bean<VerifierConfig>().verifierId,
     beanProvider<StatusListTokenValidator>().ifAvailable,
     typeMetadataPolicy = bean<TypeMetadataPolicy>(),
@@ -952,6 +960,7 @@ private fun normalizePemCertificateChain(raw: String): String {
     val trimmed = raw.trim()
     val withoutAssignment =
         if (trimmed.startsWith("VERIFIER_JAR_SIGNING_CERT_CHAIN_PEM=")) {
+            // Some deployment UIs paste multiline env values back as KEY=VALUE.
             trimmed.substringAfter('=').trim()
         } else {
             trimmed
@@ -1061,7 +1070,6 @@ private fun loadFromKeystore(environment: Environment, prod: Boolean, algorithm:
             ?.mapNotNull { certificate -> certificate as? X509Certificate }
             ?.toNonEmptyListOrNull()
             ?.all
-            ?: error("Could not load certificate chain for alias '$keyAlias'")
         SigningConfig(jwk, algorithm, certificateChain = chain)
     }
 }
@@ -1125,6 +1133,7 @@ private fun verifierConfig(environment: Environment, clock: Clock): VerifierConf
         transactionDataHashAlgorithm = transactionDataHashAlgorithm,
         authorizationRequestUri = authorizationRequestUri,
         trustSourcesConfig = environment.trustSources(),
+        issuerMetadataAllowedIssuerPatterns = environment.issuerMetadataAllowedIssuerPatterns(),
     )
 }
 
@@ -1164,6 +1173,20 @@ private fun Environment.trustSources(): Map<Regex, TrustSourceConfig>? {
     return trustSourcesConfigMap.ifEmpty {
         fallbackTrustSources()
     }
+}
+
+private fun Environment.issuerMetadataAllowedIssuerPatterns(): Set<Regex> {
+    val patterns = mutableSetOf<Regex>()
+    val prefix = "verifier.issuerMetadata.allowedIssuerPatterns"
+
+    var index = 0
+    while (true) {
+        val pattern = getPropertyOrEnvVariable("$prefix[$index]") ?: break
+        patterns += pattern.toRegex()
+        index++
+    }
+
+    return patterns
 }
 
 private fun Environment.getPropertyOrEnvVariable(property: String): String? {

@@ -312,6 +312,7 @@ data class VerifierConfig(
     val transactionDataHashAlgorithm: HashAlgorithm,
     val authorizationRequestUri: UnresolvedAuthorizationRequestUri,
     val trustSourcesConfig: Map<Regex, TrustSourceConfig>?,
+    val issuerMetadataAllowedIssuerPatterns: Set<Regex>,
 )
 
 /**

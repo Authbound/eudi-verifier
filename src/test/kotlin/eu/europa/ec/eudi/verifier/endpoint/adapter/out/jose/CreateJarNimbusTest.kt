@@ -128,6 +128,33 @@ class CreateJarNimbusTest {
         assertTrue(signedJwt.verify(verifier))
     }
 
+    @Test
+    fun `pre-registered signing should work without a certificate chain`() {
+        val strippedKey = TestContext.signingPrivateJwkWithoutCertificateChain
+        assertNull(strippedKey.parsedX509CertChain)
+
+        val verifierId = VerifierId.PreRegistered(
+            "verifier",
+            SigningConfig(
+                key = strippedKey,
+                algorithm = JWSAlgorithm.ES512,
+            ),
+        )
+        val requestObject = requestObject(verifierId)
+        val responseEncryptionKey = ECKeyGenerator(Curve.P_256)
+            .keyUse(KeyUse.ENCRYPTION)
+            .algorithm(JWEAlgorithm.ECDH_ES)
+            .keyID(UUID.randomUUID().toString())
+            .generate()
+
+        val signedJwt = createJar.sign(clientMetaData, ResponseMode.DirectPostJwt(responseEncryptionKey), requestObject, null)
+            .getOrThrow()
+
+        assertEquals(strippedKey.keyID, signedJwt.header.keyID)
+        assertNull(signedJwt.header.x509CertChain)
+        assertTrue(signedJwt.verify(verifier))
+    }
+
     private fun requestObject(verifierId: VerifierId): RequestObject {
         val query = Json.decodeFromString<InitTransactionTO>(TestUtils.loadResource("fixtures/eudi/02-dcql.json")).dcqlQuery
         return RequestObject(

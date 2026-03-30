@@ -49,6 +49,7 @@ class InitTransactionTest {
         requestUriMethod = RequestUriMethod.Get,
         authorizationRequestUri = UnresolvedAuthorizationRequestUri.fromUri("haip-vp://").getOrThrow(),
         trustSourcesConfig = mapOf(),
+        issuerMetadataAllowedIssuerPatterns = emptySet(),
     )
 
     @Test
@@ -89,6 +90,7 @@ class InitTransactionTest {
                 requestUriMethod = RequestUriMethod.Get,
                 authorizationRequestUri = UnresolvedAuthorizationRequestUri.fromUri("haip-vp://").getOrThrow(),
                 trustSourcesConfig = mapOf(),
+                issuerMetadataAllowedIssuerPatterns = emptySet(),
             )
 
             val input = InitTransactionTO(

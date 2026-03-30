@@ -32,6 +32,7 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.statusReference
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.ProvideTrustSource
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CValidator
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.issuer.IssuerMetadataJwkSetResolver
 import eu.europa.ec.eudi.verifier.endpoint.domain.Clock
 import eu.europa.ec.eudi.verifier.endpoint.domain.Clock.Companion.asKotlinClock
 import eu.europa.ec.eudi.verifier.endpoint.domain.TransactionId
@@ -39,9 +40,11 @@ import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.PresentationEven
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.PublishPresentationEvent
 import id.walt.mdoc.doc.MDoc
 import io.ktor.client.*
+import io.ktor.http.Url
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.Date
+import kotlinx.coroutines.runBlocking
 import kotlin.time.Instant
 import kotlin.time.toJavaInstant
 
@@ -49,6 +52,7 @@ data class StatusCheckException(val reason: String, val causedBy: Throwable) : E
 
 class StatusListTokenValidator(
     private val httpClient: HttpClient,
+    private val issuerMetadataJwkSetResolver: IssuerMetadataJwkSetResolver,
     private val clock: Clock,
     private val publishPresentationEvent: PublishPresentationEvent,
     private val provideTrustSource: ProvideTrustSource,
@@ -67,7 +71,7 @@ class StatusListTokenValidator(
         } catch (error: Throwable) {
             return failStatusReference("Invalid vct claim in SD-JWT VC", transactionId, error)
         } ?: return failStatusReference("Missing vct claim in SD-JWT VC", transactionId)
-        val x5cShouldBe = resolveTrustSource(vct, transactionId)
+        val x5cShouldBe = resolveTrustSource(vct)
         statusReference.validate(transactionId, x5cShouldBe)
     }
 
@@ -77,21 +81,16 @@ class StatusListTokenValidator(
         } catch (error: Throwable) {
             return failStatusReference("Invalid status_list reference in MSO mdoc", transactionId, error)
         } ?: return failStatusReference("Missing status_list reference in MSO mdoc", transactionId)
-        val x5cShouldBe = resolveTrustSource(mdoc.docType.value, transactionId)
+        val x5cShouldBe = resolveTrustSource(mdoc.docType.value)
         statusReference.validate(transactionId, x5cShouldBe)
     }
 
-    private suspend fun resolveTrustSource(type: String, transactionId: TransactionId?): X5CShouldBe {
-        val x5cShouldBe = provideTrustSource(type)
-        if (x5cShouldBe == null) {
-            failStatusReference("No trust source configured for '$type'", transactionId)
-        }
-        return x5cShouldBe
-    }
+    private suspend fun resolveTrustSource(type: String): X5CShouldBe? =
+        provideTrustSource(type)
 
     private suspend fun StatusReference.validate(
         transactionId: TransactionId?,
-        x5cShouldBe: X5CShouldBe,
+        x5cShouldBe: X5CShouldBe?,
     ) {
         catch({
             val currentStatus = with(getStatus(x5cShouldBe)) { currentStatus().getOrThrow() }
@@ -103,7 +102,7 @@ class StatusListTokenValidator(
         }
     }
 
-    private fun getStatus(x5cShouldBe: X5CShouldBe): GetStatus {
+    private fun getStatus(x5cShouldBe: X5CShouldBe?): GetStatus {
         val getStatusListToken: GetStatusListToken = GetStatusListToken.usingJwt(
             clock = clock.asKotlinClock(),
             httpClient = httpClient,
@@ -134,18 +133,44 @@ class StatusListTokenValidator(
     private fun verifyStatusListTokenSignature(
         statusListToken: String,
         at: Instant,
-        x5cShouldBe: X5CShouldBe,
+        x5cShouldBe: X5CShouldBe?,
     ): Result<Unit> = runCatching {
         val signedJwt = SignedJWT.parse(statusListToken)
-        val chain = signedJwt.header.x509CertChain?.map(::decodeCertificate)
-            ?.toNonEmptyListOrNull()
-            ?: error("Missing x5c certificate chain in status list token header")
-        val x5cValidator = X5CValidator(x5cShouldBe)
-        x5cValidator.trustedOrThrow(chain)
+        val x5c = signedJwt.header.x509CertChain?.map(::decodeCertificate)?.toNonEmptyListOrNull()
+        when {
+            x5c != null -> verifyStatusListTokenWithX5c(signedJwt, x5c, at, x5cShouldBe)
+            else -> runBlocking { verifyStatusListTokenWithIssuerMetadata(signedJwt) }
+        }
+    }
+
+    private fun verifyStatusListTokenWithX5c(
+        signedJwt: SignedJWT,
+        chain: arrow.core.NonEmptyList<X509Certificate>,
+        at: Instant,
+        x5cShouldBe: X5CShouldBe?,
+    ) {
+        val trustSource = x5cShouldBe ?: error("Status list token uses x5c but no trust source is configured")
+        if (trustSource != X5CShouldBe.Ignored) {
+            val x5cValidator = X5CValidator(trustSource)
+            x5cValidator.trustedOrThrow(chain)
+        }
         val validationDate = Date.from(at.toJavaInstant())
         chain.forEach { it.checkValidity(validationDate) }
         val verifier = DefaultJWSVerifierFactory().createJWSVerifier(signedJwt.header, chain.first().publicKey)
         check(signedJwt.verify(verifier)) { "Invalid status list token signature" }
+    }
+
+    private suspend fun verifyStatusListTokenWithIssuerMetadata(signedJwt: SignedJWT) {
+        val issuer = signedJwt.jwtClaimsSet.issuer?.let(::Url)
+            ?: error("Status list token is missing 'iss' required for issuer-metadata verification")
+        val jwkSet = issuerMetadataJwkSetResolver.resolve(issuer)
+        eu.europa.ec.eudi.verifier.endpoint.adapter.out.issuer.verifySignedJwtWithJwkSet(
+            signedJwt = signedJwt,
+            jwkSet = jwkSet,
+            useKeyId = true,
+            type = null,
+            requiredClaims = emptySet(),
+        )
     }
 
     private fun decodeCertificate(encoded: Base64): X509Certificate {
