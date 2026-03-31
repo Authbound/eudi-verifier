@@ -1165,6 +1165,13 @@ private fun Environment.trustSources(): Map<Regex, TrustSourceConfig>? {
         // Parse keystore configuration if present
         val keystoreConfig = parseKeyStoreConfig("$indexPrefix.keystore")
 
+        require(lotlSourceConfig != null || keystoreConfig != null) {
+            val lotlEnv = toEnvironmentVariable("$indexPrefix.lotl.location")
+            val keystoreEnv = toEnvironmentVariable("$indexPrefix.keystore.path")
+            "Invalid trust source '$indexPrefix': set either '$indexPrefix.lotl.location' ($lotlEnv) " +
+                "or '$indexPrefix.keystore.path' ($keystoreEnv)."
+        }
+
         trustSourcesConfigMap[pattern] = TrustSourcesConfig(lotlSourceConfig, keystoreConfig)
 
         index++
