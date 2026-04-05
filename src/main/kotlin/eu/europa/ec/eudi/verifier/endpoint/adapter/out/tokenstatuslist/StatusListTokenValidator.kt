@@ -182,8 +182,17 @@ class StatusListTokenValidator(
         private val delegate: GetStatusListToken,
         private val cache: StatusListTokenCache,
     ) : GetStatusListToken {
+        private fun shouldBypassCurrentStatusCache(uri: String, at: Instant?): Boolean =
+            at == null && !uri.contains("/versions/")
+
         override suspend fun invoke(uri: String, at: Instant?): Result<StatusListTokenClaims> =
             try {
+                // `currentStatus()` resolves with `at = null`. Those lookups must see the latest
+                // mutable status-list token, otherwise newly issued credentials can be checked
+                // against a stale shorter list cached under the same URI.
+                if (shouldBypassCurrentStatusCache(uri, at)) {
+                    return delegate(uri, null)
+                }
                 val cached = cache.get(uri, at)
                 if (cached != null) {
                     Result.success(cached)

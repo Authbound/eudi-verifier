@@ -28,6 +28,10 @@ import com.nimbusds.jwt.SignedJWT
 import eu.europa.ec.eudi.sdjwt.SdJwt
 import eu.europa.ec.eudi.sdjwt.SdJwtAndKbJwt
 import eu.europa.ec.eudi.sdjwt.SdJwtVcSpec
+import eu.europa.ec.eudi.statium.BitsPerStatus
+import eu.europa.ec.eudi.statium.PositiveDurationAsSeconds
+import eu.europa.ec.eudi.statium.StatusList
+import eu.europa.ec.eudi.statium.StatusListTokenClaims
 import eu.europa.ec.eudi.statium.TokenStatusListSpec
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.CertOps
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.CertOps.toCertificate
@@ -58,6 +62,7 @@ import java.io.ByteArrayOutputStream
 import java.security.KeyPair
 import java.security.cert.X509Certificate
 import java.util.zip.DeflaterOutputStream
+import kotlin.time.Duration.Companion.hours
 import org.bouncycastle.asn1.x500.X500Name
 
 class StatusListTokenValidatorTest {
@@ -172,9 +177,108 @@ class StatusListTokenValidatorTest {
 
         validator.validate(credentialWithStatusReference(statusListUri), TransactionId("tx"))
     }
+
+    @Test
+    fun `legacy current status checks bypass cached status list token`() = runTest {
+        val issuer = "https://issuer.example/api/v1/openid4vci"
+        val statusListUri = "$issuer/status-lists/pension"
+        val signingKey = ECKeyGenerator(Curve.P_256)
+            .keyUse(KeyUse.SIGNATURE)
+            .keyID("issuer-key-1")
+            .generate()
+        val jwksJson = signingKey.toPublicJWK().toPublicJWKSetJson()
+        val metadataJson =
+            """
+            {"issuer":"$issuer","jwks_uri":"https://issuer.example/public_keys.jwks"}
+            """.trimIndent()
+        val httpClient = metadataHttpClient(
+            mapOf(
+                "/.well-known/jwt-vc-issuer/api/v1/openid4vci" to metadataJson,
+                "/public_keys.jwks" to jwksJson,
+                "/api/v1/openid4vci/status-lists/pension" to buildStatusListToken(
+                    issuer = issuer,
+                    statusListUri = statusListUri,
+                    signingKey = signingKey,
+                    rawStatusList = byteArrayOf(0, 0, 0),
+                ),
+            ),
+        )
+        val staleClaims = StatusListTokenClaims(
+            subject = statusListUri,
+            issuedAt = Clock.System.now(),
+            expirationTime = Clock.System.now().plus(1.hours),
+            timeToLive = PositiveDurationAsSeconds(1.hours),
+            statusList = StatusList.fromRawBytes(BitsPerStatus.One, byteArrayOf(0, 0)),
+        )
+        val validator = StatusListTokenValidator(
+            httpClient = httpClient,
+            issuerMetadataJwkSetResolver = IssuerMetadataJwkSetResolver(
+                httpClient,
+                IssuerMetadataTrustPolicy(setOf(Regex("https://issuer\\.example/.*"))),
+            ),
+            clock = Clock.System,
+            publishPresentationEvent = PublishPresentationEvent { },
+            provideTrustSource = ProvideTrustSource.forAll(X5CShouldBe.Ignored),
+            cache = object : StatusListTokenCache {
+                override suspend fun get(uri: String, at: kotlin.time.Instant?): StatusListTokenClaims? = staleClaims
+
+                override suspend fun put(
+                    uri: String,
+                    at: kotlin.time.Instant?,
+                    claims: StatusListTokenClaims,
+                ) = Unit
+            },
+        )
+
+        validator.validate(credentialWithStatusReference(statusListUri, index = 16), TransactionId("tx"))
+    }
+
+    @Test
+    fun `versioned current status checks reuse cached status list token`() = runTest {
+        val issuer = "https://issuer.example/api/v1/openid4vci"
+        val statusListUri = "$issuer/status-lists/pension/versions/0"
+        var cacheGetCalls = 0
+        var cachePutCalls = 0
+        val cachedClaims = StatusListTokenClaims(
+            subject = statusListUri,
+            issuedAt = Clock.System.now(),
+            expirationTime = Clock.System.now().plus(1.hours),
+            timeToLive = PositiveDurationAsSeconds(1.hours),
+            statusList = StatusList.fromRawBytes(BitsPerStatus.One, byteArrayOf(0, 0, 0)),
+        )
+        val validator = StatusListTokenValidator(
+            httpClient = metadataHttpClient(emptyMap()),
+            issuerMetadataJwkSetResolver = IssuerMetadataJwkSetResolver(
+                metadataHttpClient(emptyMap()),
+                IssuerMetadataTrustPolicy.Disabled,
+            ),
+            clock = Clock.System,
+            publishPresentationEvent = PublishPresentationEvent { },
+            provideTrustSource = ProvideTrustSource.forAll(X5CShouldBe.Ignored),
+            cache = object : StatusListTokenCache {
+                override suspend fun get(uri: String, at: kotlin.time.Instant?): StatusListTokenClaims? {
+                    cacheGetCalls += 1
+                    return cachedClaims
+                }
+
+                override suspend fun put(
+                    uri: String,
+                    at: kotlin.time.Instant?,
+                    claims: StatusListTokenClaims,
+                ) {
+                    cachePutCalls += 1
+                }
+            },
+        )
+
+        validator.validate(credentialWithStatusReference(statusListUri, index = 16), TransactionId("tx"))
+
+        assertEquals(1, cacheGetCalls)
+        assertEquals(0, cachePutCalls)
+    }
 }
 
-private fun credentialWithStatusReference(statusListUri: String): SdJwtAndKbJwt<SignedJWT> {
+private fun credentialWithStatusReference(statusListUri: String, index: Int = 0): SdJwtAndKbJwt<SignedJWT> {
     val jwt = SignedJWT(
         JWSHeader.Builder(JWSAlgorithm.ES256).build(),
         JWTClaimsSet.Builder()
@@ -183,7 +287,7 @@ private fun credentialWithStatusReference(statusListUri: String): SdJwtAndKbJwt<
                 TokenStatusListSpec.STATUS,
                 mapOf(
                     TokenStatusListSpec.STATUS_LIST to mapOf(
-                        TokenStatusListSpec.IDX to 0,
+                        TokenStatusListSpec.IDX to index,
                         TokenStatusListSpec.URI to statusListUri,
                     ),
                 ),
@@ -214,6 +318,7 @@ private fun buildStatusListToken(
     statusListUri: String,
     signingKey: com.nimbusds.jose.jwk.ECKey,
     x5cCertificates: List<X509Certificate> = emptyList(),
+    rawStatusList: ByteArray = byteArrayOf(0),
 ): String {
     val issuedAt = Instant.now().minusSeconds(30)
     val expiresAt = issuedAt.plus(1, ChronoUnit.HOURS)
@@ -227,7 +332,7 @@ private fun buildStatusListToken(
             TokenStatusListSpec.STATUS_LIST,
             mapOf<String, Any>(
                 TokenStatusListSpec.BITS to 1,
-                TokenStatusListSpec.LIST to encodeEmptyStatusList(),
+                TokenStatusListSpec.LIST to encodeStatusList(rawStatusList),
             ) as Any,
         )
         .build()
@@ -253,6 +358,7 @@ private fun buildStatusListToken(
     statusListUri: String,
     signingKey: KeyPair,
     x5cCertificates: List<X509Certificate> = emptyList(),
+    rawStatusList: ByteArray = byteArrayOf(0),
 ): String {
     val issuedAt = Instant.now().minusSeconds(30)
     val expiresAt = issuedAt.plus(1, ChronoUnit.HOURS)
@@ -266,7 +372,7 @@ private fun buildStatusListToken(
             TokenStatusListSpec.STATUS_LIST,
             mapOf<String, Any>(
                 TokenStatusListSpec.BITS to 1,
-                TokenStatusListSpec.LIST to encodeEmptyStatusList(),
+                TokenStatusListSpec.LIST to encodeStatusList(rawStatusList),
             ) as Any,
         )
         .build()
@@ -290,8 +396,8 @@ private fun buildStatusListToken(
 private fun com.nimbusds.jose.jwk.JWK.toPublicJWKSetJson(): String =
     com.nimbusds.jose.jwk.JWKSet(toPublicJWK()).toString(false)
 
-private fun encodeEmptyStatusList(): String {
+private fun encodeStatusList(rawStatusList: ByteArray): String {
     val output = ByteArrayOutputStream()
-    DeflaterOutputStream(output).use { it.write(byteArrayOf(0)) }
+    DeflaterOutputStream(output).use { it.write(rawStatusList) }
     return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(output.toByteArray())
 }
