@@ -35,6 +35,7 @@ data class PresentationStoredEntry(
 class PresentationInMemoryRepo(
     private val presentations: ConcurrentHashMap<TransactionId, PresentationStoredEntry> = ConcurrentHashMap(),
 ) {
+    private val logger = LoggerFactory.getLogger(PresentationInMemoryRepo::class.java)
 
     val loadPresentationById: LoadPresentationById by lazy {
         LoadPresentationById { presentationId -> presentations[presentationId]?.presentation }
@@ -56,13 +57,19 @@ class PresentationInMemoryRepo(
 
     val loadIncompletePresentationsOlderThan: LoadIncompletePresentationsOlderThan by lazy {
         LoadIncompletePresentationsOlderThan { at ->
-            presentations.values.map { it.presentation }.toList().filter { it.isExpired(at) }
+            presentations.values
+                .map { it.presentation }
+                .filter { it.isExpired(at) }
+                .filterNot { it.isTerminal() }
         }
     }
 
     val storePresentation: StorePresentation by lazy {
         StorePresentation { presentation ->
             val existing = presentations[presentation.id]
+            if (!shouldStore(existing?.presentation, presentation)) {
+                return@StorePresentation
+            }
             presentations[presentation.id] =
                 existing?.copy(presentation = presentation) ?: PresentationStoredEntry(presentation, null)
         }
@@ -101,7 +108,21 @@ class PresentationInMemoryRepo(
                 .toList()
         }
     }
+
+    private fun shouldStore(existing: Presentation?, next: Presentation): Boolean {
+        if (existing == null) return true
+        if (existing.isTerminal() && !next.isTerminal()) {
+            logger.info("Skipping presentation update for tx={} because existing state is terminal", existing.id.value)
+            return false
+        }
+        if (existing.isTerminal() && next.isTerminal()) {
+            return false
+        }
+        return true
+    }
 }
+
+private fun Presentation.isTerminal(): Boolean = this is Presentation.Submitted || this is Presentation.TimedOut
 
 private val logger = LoggerFactory.getLogger("EVENTS")
 private fun log(e: PresentationEvent) {

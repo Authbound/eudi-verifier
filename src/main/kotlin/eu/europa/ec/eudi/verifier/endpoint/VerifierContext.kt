@@ -55,12 +55,14 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DeviceResponseValidat
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DocumentValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.IssuerSignedItemsShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.ValidityInfoShouldBe
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.persistence.PresentationInMemoryRepo
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.persistence.PresentationRedisRepo
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.presentation.ValidateSdJwtVcOrMsoMdocVerifiablePresentation
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.qrcode.GenerateQrCodeFromData
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.LookupTypeMetadataFromUrl
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.SdJwtVcValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.security.buildS2sJwtDecoder
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.NoopStatusListTokenCache
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.StatusListTokenRedisCache
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.StatusListTokenValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.ParsePemEncodedX509CertificateChainWithNimbus
@@ -137,6 +139,11 @@ private enum class CertificateChainSourceEnum {
     Pem,
 }
 
+private enum class PersistenceModeEnum {
+    Redis,
+    InMemory,
+}
+
 @OptIn(ExperimentalSerializationApi::class)
 internal fun beans(clock: Clock) = BeanRegistrarDsl {
     registerBean { clock }
@@ -152,6 +159,9 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
         "'verifier.presentations.cleanup.maxAge' must be greater than or equal to 'verifier.maxAge'"
     }
     val includeErrorDetails = !isProduction(env)
+    val persistenceMode =
+        env.getProperty("verifier.persistence", PersistenceModeEnum::class.java)
+            ?: PersistenceModeEnum.Redis
     validateDeploymentConfig(env)
 
     //
@@ -165,15 +175,29 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
     //
     registerBean { GenerateTransactionIdNimbus(64) }
     registerBean { GenerateRequestIdNimbus(64) }
-    registerBean {
-        PresentationRedisRepo(bean<ReactiveStringRedisTemplate>(), bean(), presentationRetention)
+    when (persistenceMode) {
+        PersistenceModeEnum.Redis -> {
+            registerBean {
+                PresentationRedisRepo(bean<ReactiveStringRedisTemplate>(), bean(), presentationRetention)
+            }
+            registerBean { bean<PresentationRedisRepo>().loadPresentationById }
+            registerBean { bean<PresentationRedisRepo>().loadPresentationByRequestId }
+            registerBean { bean<PresentationRedisRepo>().storePresentation }
+            registerBean { bean<PresentationRedisRepo>().loadIncompletePresentationsOlderThan }
+            registerBean { bean<PresentationRedisRepo>().loadPresentationEvents }
+            registerBean { bean<PresentationRedisRepo>().deletePresentationsInitiatedBefore }
+        }
+
+        PersistenceModeEnum.InMemory -> {
+            registerBean { PresentationInMemoryRepo() }
+            registerBean { bean<PresentationInMemoryRepo>().loadPresentationById }
+            registerBean { bean<PresentationInMemoryRepo>().loadPresentationByRequestId }
+            registerBean { bean<PresentationInMemoryRepo>().storePresentation }
+            registerBean { bean<PresentationInMemoryRepo>().loadIncompletePresentationsOlderThan }
+            registerBean { bean<PresentationInMemoryRepo>().loadPresentationEvents }
+            registerBean { bean<PresentationInMemoryRepo>().deletePresentationsInitiatedBefore }
+        }
     }
-    registerBean { bean<PresentationRedisRepo>().loadPresentationById }
-    registerBean { bean<PresentationRedisRepo>().loadPresentationByRequestId }
-    registerBean { bean<PresentationRedisRepo>().storePresentation }
-    registerBean { bean<PresentationRedisRepo>().loadIncompletePresentationsOlderThan }
-    registerBean { bean<PresentationRedisRepo>().loadPresentationEvents }
-    registerBean { bean<PresentationRedisRepo>().deletePresentationsInitiatedBefore }
 
     registerBean {
         val allowedRedirectUriSchemes = env.getOptionalList(
@@ -218,7 +242,10 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
     // Authbound backend callbacks (optional)
     //
     registerBean {
-        val delegate = bean<PresentationRedisRepo>().publishPresentationEvent
+        val delegate = when (persistenceMode) {
+            PersistenceModeEnum.Redis -> bean<PresentationRedisRepo>().publishPresentationEvent
+            PersistenceModeEnum.InMemory -> bean<PresentationInMemoryRepo>().publishPresentationEvent
+        }
         val backendUrl =
             (
                 env.getProperty("AUTHBOUND_BACKEND_URL")
@@ -325,7 +352,10 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
                 createHttpClient(withJsonContentNegotiation = false, trustSelfSigned = false, httpProxy = proxy)
             }
             val trustSources = bean<TrustSources>()
-            val cache = StatusListTokenRedisCache(bean(), bean())
+            val cache = when (persistenceMode) {
+                PersistenceModeEnum.Redis -> StatusListTokenRedisCache(bean(), bean())
+                PersistenceModeEnum.InMemory -> NoopStatusListTokenCache
+            }
             val issuerMetadataResolver = IssuerMetadataJwkSetResolver(httpClient, bean())
             StatusListTokenValidator(httpClient, issuerMetadataResolver, bean(), bean(), trustSources::invoke, cache)
         }
@@ -826,6 +856,13 @@ private fun isProduction(environment: Environment): Boolean =
 
 private fun validateDeploymentConfig(environment: Environment) {
     if (!isProduction(environment)) return
+
+    val persistenceMode =
+        environment.getProperty("verifier.persistence", PersistenceModeEnum::class.java)
+            ?: PersistenceModeEnum.Redis
+    require(persistenceMode == PersistenceModeEnum.Redis) {
+        "InMemory persistence is not allowed in production."
+    }
 
     val s2sEnabled = environment.getProperty("verifier.s2s.enabled", Boolean::class.java, true)
     require(s2sEnabled) { "S2S auth must be enabled in production." }

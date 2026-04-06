@@ -131,11 +131,14 @@ private fun ECKey.withoutCertificateChain(): ECKey =
 @SpringBootTest(
     classes = [VerifierApplication::class],
     webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+    properties = [
+        "verifier.persistence=in-memory",
+        "verifier.s2s.enabled=false",
+    ],
 )
 @ContextConfiguration(
     initializers = [
         BeansDslApplicationContextInitializer::class,
-        RedisTestContainerInitializer::class,
     ],
 )
 @AutoConfigureWebTestClient

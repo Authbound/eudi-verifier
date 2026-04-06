@@ -21,6 +21,7 @@ import com.nimbusds.jose.jwk.gen.ECKeyGenerator
 import eu.europa.ec.eudi.verifier.endpoint.RedisTestContainer
 import eu.europa.ec.eudi.verifier.endpoint.TestContext
 import eu.europa.ec.eudi.verifier.endpoint.adapter.input.web.VerifierApiClient
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.utils.getOrThrow
 import eu.europa.ec.eudi.verifier.endpoint.domain.*
 import eu.europa.ec.eudi.verifier.endpoint.port.input.InitTransactionResponse
 import eu.europa.ec.eudi.verifier.endpoint.port.input.ProfileTO
@@ -29,6 +30,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.reactor.awaitSingleOrNull
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration
@@ -37,6 +39,7 @@ import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
@@ -47,6 +50,7 @@ class PresentationRedisRepoTest {
 
     @BeforeEach
     fun setup() {
+        assumeTrue(RedisTestContainer.isDockerAvailable(), "Docker is required for Redis integration tests")
         RedisTestContainer.startIfNeeded()
         val config = RedisStandaloneConfiguration(RedisTestContainer.host, RedisTestContainer.port)
         connectionFactory = LettuceConnectionFactory(config)
@@ -58,7 +62,9 @@ class PresentationRedisRepoTest {
 
     @AfterEach
     fun tearDown() {
-        connectionFactory.destroy()
+        if (this::connectionFactory.isInitialized) {
+            connectionFactory.destroy()
+        }
     }
 
     @Test
@@ -119,6 +125,56 @@ class PresentationRedisRepoTest {
         assertEquals(null, loaded)
     }
 
+    @Test
+    fun `loadIncompletePresentationsOlderThan excludes submitted presentations`() = runTest {
+        val requested = requestedPresentation()
+        val requestObjectRetrieved = requested.retrieveRequestObject(clockAt(seconds = 1)).getOrThrow()
+        val submitted = requestObjectRetrieved.submit(clockAt(seconds = 2), WalletResponse.Error("error", null), null).getOrThrow()
+
+        repo.storePresentation(requested)
+        repo.storePresentation(submitted)
+
+        val incomplete = repo.loadIncompletePresentationsOlderThan(at = instantAt(seconds = 3))
+
+        assertTrue(incomplete.isEmpty())
+    }
+
+    @Test
+    fun `storePresentation keeps submitted presentation when timeout update arrives later`() = runTest {
+        val requested = requestedPresentation()
+        val requestObjectRetrieved = requested.retrieveRequestObject(clockAt(seconds = 1)).getOrThrow()
+        val submitted = requestObjectRetrieved.submit(clockAt(seconds = 2), WalletResponse.Error("error", null), null).getOrThrow()
+        val timedOut = submitted.timedOut(clockAt(seconds = 3)).getOrThrow()
+
+        repo.storePresentation(requested)
+        repo.storePresentation(submitted)
+        repo.storePresentation(timedOut)
+
+        val loaded = repo.loadPresentationById(requested.id)
+
+        assertIs<Presentation.Submitted>(loaded)
+        assertEquals(submitted.submittedAt, loaded.submittedAt)
+        assertEquals(submitted.requestId, loaded.requestId)
+    }
+
+    @Test
+    fun `storePresentation keeps timed out presentation when wallet response wins race too late`() = runTest {
+        val requested = requestedPresentation()
+        val requestObjectRetrieved = requested.retrieveRequestObject(clockAt(seconds = 1)).getOrThrow()
+        val timedOut = requestObjectRetrieved.timedOut(clockAt(seconds = 2)).getOrThrow()
+        val submitted = requestObjectRetrieved.submit(clockAt(seconds = 3), WalletResponse.Error("error", null), null).getOrThrow()
+
+        repo.storePresentation(requested)
+        repo.storePresentation(timedOut)
+        repo.storePresentation(submitted)
+
+        val loaded = repo.loadPresentationById(requested.id)
+
+        assertIs<Presentation.TimedOut>(loaded)
+        assertEquals(timedOut.timedOutAt, loaded.timedOutAt)
+        assertEquals(timedOut.requestObjectRetrievedAt, loaded.requestObjectRetrievedAt)
+    }
+
     private fun requestedPresentation(): Presentation.Requested {
         val dcql = VerifierApiClient.loadInitTransactionTO("fixtures/eudi/00-dcql.json").dcqlQuery!!
         val jwk = ECKeyGenerator(Curve.P_256)
@@ -126,7 +182,7 @@ class PresentationRedisRepoTest {
             .generate()
         return Presentation.Requested(
             id = TransactionId("tx-${System.nanoTime()}"),
-            initiatedAt = TestContext.testClock.now(),
+            initiatedAt = BASE_TIME,
             query = dcql,
             transactionData = null,
             requestId = RequestId("req-${System.nanoTime()}"),
@@ -139,7 +195,15 @@ class PresentationRedisRepoTest {
         )
     }
 
+    private fun clockAt(seconds: Int): Clock = Clock.fixed(instantAt(seconds), kotlinx.datetime.TimeZone.UTC)
+
+    private fun instantAt(seconds: Int) = BASE_TIME + seconds.seconds
+
     private fun flushRedis() = runTest {
         redis.connectionFactory.reactiveConnection.serverCommands().flushAll().awaitSingleOrNull()
+    }
+
+    private companion object {
+        val BASE_TIME = TestContext.testClock.now()
     }
 }
