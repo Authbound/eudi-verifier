@@ -65,7 +65,7 @@ import kotlin.time.Instant
 @VerifierApplicationTest([WalletResponseDirectPostJwtValidationsDisabledTest.Config::class])
 @TestPropertySource(
     properties = [
-        "verifier.maxAge=PT6400M",
+        "verifier.maxAge=PT15M",
         "verifier.response.mode=DirectPostJwt",
         "verifier.clientMetadata.responseEncryption.algorithm=ECDH-ES",
         "verifier.clientMetadata.responseEncryption.method=A128GCM",
@@ -322,7 +322,7 @@ internal class WalletResponseDirectPostJwtValidationsDisabledTest {
 @VerifierApplicationTest
 @TestPropertySource(
     properties = [
-        "verifier.maxAge=PT6400M",
+        "verifier.maxAge=PT15M",
         "verifier.response.mode=DirectPostJwt",
         "verifier.clientMetadata.responseEncryption.algorithm=ECDH-ES",
         "verifier.clientMetadata.responseEncryption.method=A128GCM",
@@ -407,7 +407,7 @@ internal class WalletResponseDirectPostJwtValidationsEnabledTest {
 @VerifierApplicationTest([DeviceResponseValidationTest.Config::class])
 @TestPropertySource(
     properties = [
-        "verifier.maxAge=PT6400M",
+        "verifier.maxAge=PT15M",
         "verifier.response.mode=DirectPostJwt",
         "verifier.clientMetadata.responseEncryption.algorithm=ECDH-ES",
         "verifier.clientMetadata.responseEncryption.method=A128GCM",

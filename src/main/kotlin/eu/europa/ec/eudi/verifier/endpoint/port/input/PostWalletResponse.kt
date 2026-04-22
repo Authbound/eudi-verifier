@@ -17,6 +17,7 @@ package eu.europa.ec.eudi.verifier.endpoint.port.input
 
 import arrow.core.Either
 import arrow.core.getOrElse
+import arrow.core.raise.Raise
 import arrow.core.raise.either
 import arrow.core.raise.ensure
 import arrow.core.raise.ensureNotNull
@@ -33,7 +34,9 @@ import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.LoadPresentation
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.PresentationEvent
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.PublishPresentationEvent
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.StorePresentation
+import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.StorePresentationResult
 import eu.europa.ec.eudi.verifier.endpoint.port.out.presentation.ValidateVerifiablePresentation
+import io.micrometer.core.instrument.Metrics
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
@@ -214,6 +217,7 @@ class PostWalletResponseLive(
     private val validateVerifiablePresentation: ValidateVerifiablePresentation,
 ) : PostWalletResponse {
     private val logger: Logger = LoggerFactory.getLogger(PostWalletResponseLive::class.java)
+    private val lateWalletResponseCounter = Metrics.counter("eudi_presentations_late_wallet_responses_total")
 
     override suspend operator fun invoke(
         requestId: RequestId,
@@ -228,8 +232,9 @@ class PostWalletResponseLive(
             )
             return@either duplicateAccepted(presentation)
         }
+        ensureNotExpired(requestId, presentation)
         doInvoke(presentation, walletResponse)
-            .onLeft { cause -> logFailure(presentation, cause) }
+            .onLeft { cause -> logFailureIfNeeded(presentation, cause) }
             .onRight { (submitted, accepted) -> logWalletResponsePosted(submitted, accepted) }
             .map { (_, accepted) -> accepted }
             .bind()
@@ -252,7 +257,11 @@ class PostWalletResponseLive(
             // Submit the response
             val submitted = submit(presentation, responseObject)
                 .bind()
-                .also { storePresentation(it) }
+            ensureNotExpired(presentation.requestId, presentation)
+            val storeResult = storePresentation(submitted)
+            ensure(storeResult == StorePresentationResult.Stored) {
+                WalletResponseValidationError.PresentationNotFound
+            }
 
             val accepted = when (val getWalletResponseMethod = presentation.getWalletResponseMethod) {
                 is GetWalletResponseMethod.Redirect ->
@@ -282,6 +291,22 @@ class PostWalletResponseLive(
             val presentation = loadPresentationByRequestId(requestId)
             ensureNotNull(presentation) { WalletResponseValidationError.PresentationNotFound }
         }
+
+    private suspend fun Raise<WalletResponseValidationError>.ensureNotExpired(
+        requestId: RequestId,
+        presentation: Presentation,
+    ) {
+        if (presentation.isExpired(clock.now(), verifierConfig.maxAge)) {
+            markTimedOut(presentation)
+            lateWalletResponseCounter.increment()
+            logger.info(
+                "Late wallet response rejected because presentation expired requestId={} tx={}",
+                requestId.value,
+                presentation.id.value,
+            )
+            raise(WalletResponseValidationError.PresentationNotFound)
+        }
+    }
 
     private fun responseObject(
         walletResponse: AuthorisationResponse,
@@ -355,6 +380,25 @@ class PostWalletResponseLive(
     private suspend fun logFailure(p: Presentation, cause: WalletResponseValidationError) {
         val event = PresentationEvent.WalletFailedToPostResponse(p.id, clock.now(), cause)
         publishPresentationEvent(event)
+    }
+
+    private suspend fun logFailureIfNeeded(p: Presentation, cause: WalletResponseValidationError) {
+        if (cause != WalletResponseValidationError.PresentationNotFound) {
+            logFailure(p, cause)
+        }
+    }
+
+    private suspend fun markTimedOut(presentation: Presentation) {
+        val timedOut = when (presentation) {
+            is Presentation.Requested -> presentation.timedOut(clock).getOrThrow()
+            is Presentation.RequestObjectRetrieved -> presentation.timedOut(clock).getOrThrow()
+            is Presentation.Submitted -> presentation.timedOut(clock).getOrThrow()
+            is Presentation.TimedOut -> null
+        }
+
+        if (timedOut != null && storePresentation(timedOut) == StorePresentationResult.Stored) {
+            publishPresentationEvent(PresentationEvent.PresentationExpired(timedOut.id, timedOut.timedOutAt))
+        }
     }
 }
 

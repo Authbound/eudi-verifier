@@ -131,6 +131,7 @@ class CreateJarNimbus : CreateJar {
                 v?.let { claim(c, it) }
             }
             issueTime(r.issuedAt.toJavaDate())
+            expirationTime(r.expiresAt.toJavaDate())
             audience(r.aud)
             claim(OpenId4VPSpec.NONCE, r.nonce)
             optionalClaim(OpenId4VPSpec.CLIENT_METADATA, clientMetaData?.toJSONObject())

@@ -643,17 +643,23 @@ Description: How Authorization Responses are expected
 Possible values: `DirectPost`, `DirectPostJwt`  
 Default value: `DirectPostJwt`
 
-Variable: `VERIFIER_MAXAGE`  
-Description: TTL of an Authorization Request  
-Notes: Provide a value using Java Duration syntax  
-Example: `PT6400M`  
-Default value: `PT6400M`
+Variable: `VERIFIER_MAXAGE`
+Description: TTL of an Authorization Request
+Notes: Provide a value using Java Duration syntax
+Example: `PT15M`
+Default value: `PT15M`
 
-Variable: `VERIFIER_PRESENTATIONS_CLEANUP_MAXAGE`  
-Description: Age of Authorization Requests. Authorization Requests older than this, are deleted.     
-Notes: Provide a value using Java Duration syntax  
-Example: `P10D`  
-Default value: `P10D`
+Variable: `VERIFIER_PRESENTATIONS_CLEANUP_MAXAGE`
+Description: Age of Authorization Requests. Authorization Requests older than this, are deleted.
+Notes: Provide a value using Java Duration syntax
+Example: `P1D`
+Default value: `P1D`
+
+Variable: `VERIFIER_PRESENTATIONS_TIMEOUTCHECKINTERVAL`
+Description: Interval for the background timeout sweeper. Expiry is also enforced synchronously on wallet request and response paths.
+Notes: Provide a value using Java Duration syntax
+Example: `PT60S`
+Default value: `PT60S`
 
 Variable: `VERIFIER_AUTHORIZATIONREQUESTURI`  
 Description: The Authorization Request Uri to be used when generating an Authorization Request.      

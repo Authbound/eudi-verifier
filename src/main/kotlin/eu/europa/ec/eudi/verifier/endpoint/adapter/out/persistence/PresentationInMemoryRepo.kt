@@ -67,11 +67,13 @@ class PresentationInMemoryRepo(
     val storePresentation: StorePresentation by lazy {
         StorePresentation { presentation ->
             val existing = presentations[presentation.id]
-            if (!shouldStore(existing?.presentation, presentation)) {
-                return@StorePresentation
+            val storeResult = storeDecision(existing?.presentation, presentation)
+            if (storeResult != StorePresentationResult.Stored) {
+                return@StorePresentation storeResult
             }
             presentations[presentation.id] =
                 existing?.copy(presentation = presentation) ?: PresentationStoredEntry(presentation, null)
+            StorePresentationResult.Stored
         }
     }
 
@@ -109,20 +111,32 @@ class PresentationInMemoryRepo(
         }
     }
 
-    private fun shouldStore(existing: Presentation?, next: Presentation): Boolean {
-        if (existing == null) return true
-        if (existing.isTerminal() && !next.isTerminal()) {
-            logger.info("Skipping presentation update for tx={} because existing state is terminal", existing.id.value)
-            return false
-        }
+    private fun storeDecision(existing: Presentation?, next: Presentation): StorePresentationResult {
+        if (existing == null) return StorePresentationResult.Stored
         if (existing.isTerminal() && next.isTerminal()) {
-            return false
+            logger.info(
+                "Skipping presentation update for tx={} existingState={} nextState={} because existing state is terminal",
+                existing.id.value,
+                existing::class.simpleName,
+                next::class.simpleName,
+            )
+            return StorePresentationResult.SkippedTerminal
         }
-        return true
+        if (existing.isTerminal()) {
+            logger.info(
+                "Skipping presentation update for tx={} existingState={} nextState={} because existing state is terminal",
+                existing.id.value,
+                existing::class.simpleName,
+                next::class.simpleName,
+            )
+            return StorePresentationResult.SkippedTerminal
+        }
+        return StorePresentationResult.Stored
     }
 }
 
-private fun Presentation.isTerminal(): Boolean = this is Presentation.Submitted || this is Presentation.TimedOut
+private fun Presentation.isTerminal(): Boolean =
+    this is Presentation.Submitted || this is Presentation.TimedOut
 
 private val logger = LoggerFactory.getLogger("EVENTS")
 private fun log(e: PresentationEvent) {

@@ -38,14 +38,30 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.dropRootCAIfPresent
 import eu.europa.ec.eudi.verifier.endpoint.domain.SigningConfig
 import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierId
 import eu.europa.ec.eudi.verifier.endpoint.domain.DCQL
+import eu.europa.ec.eudi.verifier.endpoint.domain.Clock
+import eu.europa.ec.eudi.verifier.endpoint.domain.EmbedOption
+import eu.europa.ec.eudi.verifier.endpoint.domain.GetWalletResponseMethod
+import eu.europa.ec.eudi.verifier.endpoint.domain.HashAlgorithm
+import eu.europa.ec.eudi.verifier.endpoint.domain.Nonce
 import eu.europa.ec.eudi.verifier.endpoint.domain.OpenId4VPSpec
+import eu.europa.ec.eudi.verifier.endpoint.domain.Presentation
+import eu.europa.ec.eudi.verifier.endpoint.domain.Profile
+import eu.europa.ec.eudi.verifier.endpoint.domain.RequestId
+import eu.europa.ec.eudi.verifier.endpoint.domain.RequestUriMethod
 import eu.europa.ec.eudi.verifier.endpoint.domain.ResponseMode
+import eu.europa.ec.eudi.verifier.endpoint.domain.ResponseModeOption
+import eu.europa.ec.eudi.verifier.endpoint.domain.TransactionId
+import eu.europa.ec.eudi.verifier.endpoint.domain.UnresolvedAuthorizationRequestUri
+import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierConfig
 import eu.europa.ec.eudi.verifier.endpoint.port.input.InitTransactionTO
+import eu.europa.ec.eudi.verifier.endpoint.domain.toJavaDate
+import kotlinx.datetime.TimeZone
 import kotlinx.serialization.json.Json
 import net.minidev.json.JSONObject
 import java.net.URL
 import java.util.*
 import kotlin.test.*
+import kotlin.time.Duration.Companion.minutes
 
 class CreateJarNimbusTest {
 
@@ -68,6 +84,7 @@ class CreateJarNimbusTest {
             state = TestContext.testRequestId.value,
             aud = emptyList(),
             issuedAt = TestContext.testClock.now(),
+            expiresAt = TestContext.testClock.now() + 15.minutes,
         )
 
         // responseMode is direct_post.jwt, so we need to generate an ephemeral key
@@ -155,6 +172,17 @@ class CreateJarNimbusTest {
         assertTrue(signedJwt.verify(verifier))
     }
 
+    @Test
+    fun `request object expiration is capped to original presentation deadline`() {
+        val requested = requestedPresentation()
+        val signingClock = Clock.fixed(requested.initiatedAt + 10.minutes, TimeZone.UTC)
+
+        val requestObject = requestObjectFromDomain(verifierConfig(), signingClock, requested)
+
+        assertEquals(signingClock.now(), requestObject.issuedAt)
+        assertEquals(requested.initiatedAt + 15.minutes, requestObject.expiresAt)
+    }
+
     private fun requestObject(verifierId: VerifierId): RequestObject {
         val query = Json.decodeFromString<InitTransactionTO>(TestUtils.loadResource("fixtures/eudi/02-dcql.json")).dcqlQuery
         return RequestObject(
@@ -168,8 +196,41 @@ class CreateJarNimbusTest {
             state = TestContext.testRequestId.value,
             aud = emptyList(),
             issuedAt = TestContext.testClock.now(),
+            expiresAt = TestContext.testClock.now() + 15.minutes,
         )
     }
+
+    private fun requestedPresentation(): Presentation.Requested {
+        val query = Json.decodeFromString<InitTransactionTO>(TestUtils.loadResource("fixtures/eudi/02-dcql.json")).dcqlQuery!!
+        return Presentation.Requested(
+            id = TransactionId("tx-${UUID.randomUUID()}"),
+            initiatedAt = TestContext.testClock.now(),
+            query = query,
+            transactionData = null,
+            requestId = RequestId("req-${UUID.randomUUID()}"),
+            requestUriMethod = RequestUriMethod.Get,
+            nonce = Nonce("nonce-${UUID.randomUUID()}"),
+            responseMode = ResponseMode.DirectPost,
+            getWalletResponseMethod = GetWalletResponseMethod.Poll,
+            issuerChain = null,
+            profile = Profile.OpenId4VP,
+        )
+    }
+
+    private fun verifierConfig(): VerifierConfig =
+        VerifierConfig(
+            verifierId = verifierId,
+            requestJarOption = EmbedOption.ByReference { _ -> URL("https://verifier.example/request.jwt") },
+            responseUriBuilder = { _ -> URL("https://verifier.example/response") },
+            responseModeOption = ResponseModeOption.DirectPost,
+            maxAge = 15.minutes,
+            clientMetaData = clientMetaData,
+            transactionDataHashAlgorithm = HashAlgorithm.SHA_256,
+            requestUriMethod = RequestUriMethod.Get,
+            authorizationRequestUri = UnresolvedAuthorizationRequestUri.fromUri("haip-vp://").getOrThrow(),
+            trustSourcesConfig = emptyMap(),
+            issuerMetadataAllowedIssuerPatterns = emptySet(),
+        )
 
     private fun decode(jwt: String): Result<SignedJWT> {
         return runCatching {
@@ -191,6 +252,8 @@ class CreateJarNimbusTest {
         assertEquals(r.responseMode, c.getStringClaim("response_mode"))
         assertEquals(r.responseUri?.toExternalForm(), c.getStringClaim(OpenId4VPSpec.RESPONSE_URI))
         assertEquals(r.state, c.getStringClaim("state"))
+        assertEquals(r.issuedAt.toJavaDate(), c.issueTime)
+        assertEquals(r.expiresAt.toJavaDate(), c.expirationTime)
     }
 
     private fun assertX5cHeaderClaimDoesNotContainPEM(header: JWSHeader) {

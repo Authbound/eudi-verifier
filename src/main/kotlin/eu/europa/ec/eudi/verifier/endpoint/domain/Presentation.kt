@@ -19,6 +19,7 @@ import arrow.core.Either
 import arrow.core.NonEmptyList
 import kotlinx.serialization.json.JsonObject
 import java.security.cert.X509Certificate
+import kotlin.time.Duration
 import kotlin.time.Instant
 
 @JvmInline
@@ -330,11 +331,22 @@ fun Presentation.isExpired(at: Instant): Boolean {
     fun Instant.isBeforeOrEqual(at: Instant) = this <= at
     return when (this) {
         is Presentation.Requested -> initiatedAt.isBeforeOrEqual(at)
-        is Presentation.RequestObjectRetrieved -> requestObjectRetrievedAt.isBeforeOrEqual(at)
+        is Presentation.RequestObjectRetrieved -> initiatedAt.isBeforeOrEqual(at)
         is Presentation.TimedOut -> false
         is Presentation.Submitted -> initiatedAt.isBeforeOrEqual(at)
     }
 }
+
+fun Presentation.expiresAt(maxAge: Duration): Instant? =
+    when (this) {
+        is Presentation.Requested -> initiatedAt + maxAge
+        is Presentation.RequestObjectRetrieved -> initiatedAt + maxAge
+        is Presentation.Submitted -> initiatedAt + maxAge
+        is Presentation.TimedOut -> null
+    }
+
+fun Presentation.isExpired(now: Instant, maxAge: Duration): Boolean =
+    expiresAt(maxAge)?.let { it <= now } ?: false
 
 fun Presentation.Requested.retrieveRequestObject(clock: Clock): Either<Throwable, Presentation.RequestObjectRetrieved> =
     Presentation.RequestObjectRetrieved.requestObjectRetrieved(this, clock.now())

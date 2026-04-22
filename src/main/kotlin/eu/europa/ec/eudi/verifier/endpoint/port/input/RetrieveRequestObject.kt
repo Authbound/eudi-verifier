@@ -31,6 +31,8 @@ import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.LoadPresentation
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.PresentationEvent
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.PublishPresentationEvent
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.StorePresentation
+import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.StorePresentationResult
+import io.micrometer.core.instrument.Metrics
 import io.ktor.client.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -87,6 +89,7 @@ class RetrieveRequestObjectLive(
 
     private val walletMetadataValidator = WalletMetadataValidator(verifierConfig, httpClient)
     private val logger = LoggerFactory.getLogger(RetrieveRequestObjectLive::class.java)
+    private val lateRequestObjectCounter = Metrics.counter("eudi_presentations_late_request_object_fetches_total")
 
     override suspend operator fun invoke(
         requestId: RequestId,
@@ -104,6 +107,8 @@ class RetrieveRequestObjectLive(
         method: RetrieveRequestObjectMethod,
     ): Either<RetrieveRequestObjectError, Jwt> =
         either {
+            ensureNotExpired(presentation)
+
             ensure(presentation is Presentation.Requested) {
                 RetrieveRequestObjectError.InvalidState(Presentation.Requested::class, presentation::class)
             }
@@ -122,7 +127,8 @@ class RetrieveRequestObjectLive(
 
             suspend fun updatePresentationAndCreateJar(
                 encryptionRequirement: EncryptionRequirement,
-            ): Pair<Presentation.RequestObjectRetrieved, Jwt> {
+            ): Either<RetrieveRequestObjectError, Pair<Presentation.RequestObjectRetrieved, Jwt>> = either {
+                ensureNotExpired(presentation)
                 val jar = createJar(
                     verifierConfig,
                     clock,
@@ -130,9 +136,13 @@ class RetrieveRequestObjectLive(
                     method.walletNonceOrNull,
                     encryptionRequirement,
                 ).getOrThrow()
+                ensureNotExpired(presentation)
                 val updatedPresentation = presentation.retrieveRequestObject(clock).getOrThrow()
-                storePresentation(updatedPresentation)
-                return updatedPresentation to jar
+                val storeResult = storePresentation(updatedPresentation)
+                ensure(storeResult == StorePresentationResult.Stored) {
+                    RetrieveRequestObjectError.PresentationNotFound
+                }
+                updatedPresentation to jar
             }
 
             suspend fun log(p: Presentation.RequestObjectRetrieved, jwt: Jwt) {
@@ -157,8 +167,9 @@ class RetrieveRequestObjectLive(
 
             val walletMetadata = method.walletMetadataOrNull?.let { parseWalletMetadata(it).bind() }
             val encryptionRequirement = walletMetadata?.validate(presentation)?.bind() ?: EncryptionRequirement.NotRequired
+            ensureNotExpired(presentation)
 
-            val (updatePresentation, jar) = updatePresentationAndCreateJar(encryptionRequirement)
+            val (updatePresentation, jar) = updatePresentationAndCreateJar(encryptionRequirement).bind()
             logger.info("Request object created tx={}", updatePresentation.id.value)
             log(updatePresentation, jar)
             jar
@@ -183,10 +194,32 @@ class RetrieveRequestObjectLive(
             }
         }
 
+    private suspend fun Raise<RetrieveRequestObjectError>.ensureNotExpired(presentation: Presentation) {
+        if (presentation.isExpired(clock.now(), verifierConfig.maxAge)) {
+            markTimedOut(presentation)
+            lateRequestObjectCounter.increment()
+            raise(RetrieveRequestObjectError.PresentationNotFound)
+        }
+    }
+
     private suspend fun WalletMetadataTO.validate(
         presentation: Presentation.Requested,
     ): Either<RetrieveRequestObjectError, EncryptionRequirement> =
         walletMetadataValidator.validate(this, presentation)
+
+    private suspend fun markTimedOut(presentation: Presentation) {
+        val timedOut = when (presentation) {
+            is Presentation.Requested -> presentation.timedOut(clock).getOrThrow()
+            is Presentation.RequestObjectRetrieved -> presentation.timedOut(clock).getOrThrow()
+            is Presentation.Submitted -> presentation.timedOut(clock).getOrThrow()
+            is Presentation.TimedOut -> null
+        }
+
+        if (timedOut != null && storePresentation(timedOut) == StorePresentationResult.Stored) {
+            logger.info("Presentation expired synchronously during request object retrieval tx={}", presentation.id.value)
+            publishPresentationEvent(PresentationEvent.PresentationExpired(timedOut.id, timedOut.timedOutAt))
+        }
+    }
 }
 
 /**

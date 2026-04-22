@@ -29,6 +29,8 @@ import eu.europa.ec.eudi.verifier.endpoint.port.input.WalletResponseAcceptedTO
 import eu.europa.ec.eudi.verifier.endpoint.port.input.WalletResponseTO
 import eu.europa.ec.eudi.verifier.endpoint.port.input.WalletResponseValidationError
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.*
+import io.micrometer.core.instrument.Metrics
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.reactor.awaitSingleOrNull
 import kotlinx.serialization.SerialName
@@ -40,12 +42,17 @@ import kotlinx.serialization.json.jsonObject
 import org.slf4j.LoggerFactory
 import org.springframework.data.domain.Range
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate
+import org.springframework.data.redis.core.script.DefaultRedisScript
 import java.io.ByteArrayInputStream
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.Base64
+import java.util.UUID
 import kotlin.time.Duration
 import kotlin.time.Instant
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
 
 class PresentationRedisRepo(
@@ -54,6 +61,12 @@ class PresentationRedisRepo(
     private val ttl: Duration,
 ) {
     private val logger = LoggerFactory.getLogger(PresentationRedisRepo::class.java)
+    private val lockTtl = 5.seconds
+    private val lockRetryDelay = 25.milliseconds
+    private val lockAttempts = 40
+    private val timeoutClaimTtl = 2.minutes
+    private val timeoutClaimCounter = Metrics.counter("eudi_presentations_timeout_claimed_total")
+    private val storeSkippedTerminalCounter = Metrics.counter("eudi_presentations_store_skipped_terminal_total")
 
     val loadPresentationById: LoadPresentationById by lazy {
         LoadPresentationById { transactionId ->
@@ -81,7 +94,16 @@ class PresentationRedisRepo(
                 .rangeByScore(keys.incompleteIndex, Range.closed(0.0, at.toEpochMilliseconds().toDouble()))
                 .collectList()
                 .awaitSingle()
-            ids.mapNotNull { TransactionId(it) }
+            val claimedIds = ids.mapNotNull { TransactionId(it) }
+                .filter { claimExpiredIncomplete(it) }
+            val indexSize = redis.opsForZSet().size(keys.incompleteIndex).awaitSingleOrNull()
+            logger.debug(
+                "Loaded expired incomplete presentations candidates={} claimed={} incompleteIndexSize={}",
+                ids.size,
+                claimedIds.size,
+                indexSize,
+            )
+            claimedIds
                 .mapNotNull { loadPresentationById(it) }
                 .filterNot { it is Presentation.TimedOut }
         }
@@ -89,17 +111,21 @@ class PresentationRedisRepo(
 
     val storePresentation: StorePresentation by lazy {
         StorePresentation { presentation ->
-            val key = keys.presentation(presentation.id)
-            val existing = redis.opsForValue().get(key).awaitSingleOrNull()?.let { decodePresentation(it) }
-            if (!shouldStore(existing, presentation)) {
-                return@StorePresentation
-            }
+            withPresentationLock(presentation.id) {
+                val key = keys.presentation(presentation.id)
+                val existing = redis.opsForValue().get(key).awaitSingleOrNull()?.let { decodePresentation(it) }
+                val storeResult = storeDecision(existing, presentation)
+                if (storeResult != StorePresentationResult.Stored) {
+                    return@withPresentationLock storeResult
+                }
 
-            val serialized = jsonSupport.encodeToString(PresentationRecord.serializer(), presentation.toRecord())
-            redis.opsForValue().set(key, serialized, ttl.toJavaDuration()).awaitSingle()
-            persistRequestMapping(presentation, existing)
-            persistIndexes(presentation)
-            redis.expire(keys.events(presentation.id), ttl.toJavaDuration()).awaitSingleOrNull()
+                val serialized = jsonSupport.encodeToString(PresentationRecord.serializer(), presentation.toRecord())
+                redis.opsForValue().set(key, serialized, ttl.toJavaDuration()).awaitSingle()
+                persistRequestMapping(presentation, existing)
+                persistIndexes(presentation)
+                redis.expire(keys.events(presentation.id), ttl.toJavaDuration()).awaitSingleOrNull()
+                StorePresentationResult.Stored
+            }
         }
     }
 
@@ -168,6 +194,7 @@ class PresentationRedisRepo(
 
         if (presentation is Presentation.TimedOut || presentation is Presentation.Submitted) {
             redis.opsForZSet().remove(keys.incompleteIndex, presentation.id.value).awaitSingleOrNull()
+            redis.delete(keys.timeoutClaim(presentation.id)).awaitSingleOrNull()
             return
         }
 
@@ -187,18 +214,61 @@ class PresentationRedisRepo(
         redis.delete(keys.events(transactionId)).awaitSingleOrNull()
         redis.opsForZSet().remove(keys.initiatedIndex, transactionId.value).awaitSingleOrNull()
         redis.opsForZSet().remove(keys.incompleteIndex, transactionId.value).awaitSingleOrNull()
+        redis.delete(keys.timeoutClaim(transactionId)).awaitSingleOrNull()
     }
 
-    private fun shouldStore(existing: Presentation?, next: Presentation): Boolean {
-        if (existing == null) return true
-        if (existing.isTerminal() && !next.isTerminal()) {
-            logger.info("Skipping presentation update for tx={} because existing state is terminal", existing.id.value)
-            return false
+    private fun storeDecision(existing: Presentation?, next: Presentation): StorePresentationResult {
+        if (existing == null) return StorePresentationResult.Stored
+        if (existing.isTerminal()) {
+            storeSkippedTerminalCounter.increment()
+            logger.info(
+                "Skipping presentation update for tx={} existingState={} nextState={} because existing state is terminal",
+                existing.id.value,
+                existing::class.simpleName,
+                next::class.simpleName,
+            )
+            return StorePresentationResult.SkippedTerminal
         }
-        if (existing.isTerminal() && next.isTerminal()) {
-            return false
+        return StorePresentationResult.Stored
+    }
+
+    private suspend fun claimExpiredIncomplete(transactionId: TransactionId): Boolean {
+        val claimed = redis.opsForValue()
+            .setIfAbsent(
+                keys.timeoutClaim(transactionId),
+                clock.now().toEpochMilliseconds().toString(),
+                timeoutClaimTtl.toJavaDuration(),
+            )
+            .awaitSingle()
+        if (claimed) {
+            timeoutClaimCounter.increment()
         }
-        return true
+        return claimed
+    }
+
+    private suspend fun <T> withPresentationLock(transactionId: TransactionId, action: suspend () -> T): T {
+        val key = keys.lock(transactionId)
+        val token = UUID.randomUUID().toString()
+        repeat(lockAttempts) {
+            val acquired = redis.opsForValue()
+                .setIfAbsent(key, token, lockTtl.toJavaDuration())
+                .awaitSingle()
+            if (acquired) {
+                try {
+                    return action()
+                } finally {
+                    releasePresentationLock(key, token)
+                }
+            }
+            delay(lockRetryDelay.inWholeMilliseconds)
+        }
+        error("Could not acquire presentation lock for tx=${transactionId.value}")
+    }
+
+    private suspend fun releasePresentationLock(key: String, token: String) {
+        redis.execute(releaseLockScript, listOf(key), listOf(token))
+            .collectList()
+            .awaitSingleOrNull()
     }
 
     private fun decodePresentation(serialized: String): Presentation =
@@ -216,7 +286,7 @@ class PresentationRedisRepo(
 
     private fun Presentation.expiryCheckpoint(): Instant = when (this) {
         is Presentation.Requested -> initiatedAt
-        is Presentation.RequestObjectRetrieved -> requestObjectRetrievedAt
+        is Presentation.RequestObjectRetrieved -> initiatedAt
         is Presentation.Submitted -> initiatedAt
         is Presentation.TimedOut -> initiatedAt
     }
@@ -231,6 +301,20 @@ class PresentationRedisRepo(
         fun events(transactionId: TransactionId) = "eudi:presentation:events:${transactionId.value}"
         fun requestToTransaction(requestId: RequestId) = "eudi:presentation:request:${requestId.value}"
         fun transactionToRequest(transactionId: TransactionId) = "eudi:presentation:tx:${transactionId.value}:request"
+        fun timeoutClaim(transactionId: TransactionId) = "eudi:presentation:timeout-claim:${transactionId.value}"
+        fun lock(transactionId: TransactionId) = "eudi:presentation:lock:${transactionId.value}"
+    }
+
+    private companion object {
+        val releaseLockScript = DefaultRedisScript(
+            """
+            if redis.call('get', KEYS[1]) == ARGV[1] then
+              return redis.call('del', KEYS[1])
+            end
+            return 0
+            """.trimIndent(),
+            Long::class.java,
+        )
     }
 
     @Serializable

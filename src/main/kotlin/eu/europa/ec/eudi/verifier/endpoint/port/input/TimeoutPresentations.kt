@@ -23,6 +23,7 @@ import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.LoadIncompletePr
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.PresentationEvent
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.PublishPresentationEvent
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.StorePresentation
+import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.StorePresentationResult
 import kotlin.time.Duration
 
 fun interface TimeoutPresentations {
@@ -49,10 +50,10 @@ class TimeoutPresentationsLive(
             is Presentation.Submitted -> presentation.timedOut(clock).getOrNull()
             is Presentation.TimedOut -> null
         }
-        return timeout?.also { timedOut ->
-            logExpired(timedOut)
-            storePresentation(timedOut)
-        }
+        if (timeout == null) return null
+        if (storePresentation(timeout) != StorePresentationResult.Stored) return null
+        logExpired(timeout)
+        return timeout
     }
 
     private suspend fun logExpired(presentation: Presentation.TimedOut) {

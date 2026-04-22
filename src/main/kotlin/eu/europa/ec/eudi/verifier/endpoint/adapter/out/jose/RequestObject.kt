@@ -30,6 +30,7 @@ internal data class RequestObject(
     val aud: List<String>,
     val state: String,
     val issuedAt: Instant,
+    val expiresAt: Instant,
     val transactionData: List<String>? = null,
 )
 
@@ -43,6 +44,7 @@ internal fun requestObjectFromDomain(
     val aud = listOf("https://self-issued.me/v2")
     val transactionData = presentation.transactionData?.map { it.base64Url }
 
+    val issuedAt = clock.now()
     return RequestObject(
         verifierId = verifierConfig.verifierId,
         scope = scope,
@@ -56,7 +58,8 @@ internal fun requestObjectFromDomain(
             is ResponseMode.DirectPostJwt -> OpenId4VPSpec.RESPONSE_MODE_DIRECT_POST_JWT
         },
         responseUri = verifierConfig.responseUriBuilder(presentation.requestId),
-        issuedAt = clock.now(),
+        issuedAt = issuedAt,
+        expiresAt = presentation.initiatedAt + verifierConfig.maxAge,
         transactionData = transactionData,
     )
 }

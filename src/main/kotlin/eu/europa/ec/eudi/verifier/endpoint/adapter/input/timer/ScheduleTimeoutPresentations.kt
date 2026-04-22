@@ -16,6 +16,7 @@
 package eu.europa.ec.eudi.verifier.endpoint.adapter.input.timer
 
 import eu.europa.ec.eudi.verifier.endpoint.port.input.TimeoutPresentations
+import io.micrometer.core.instrument.Metrics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.slf4j.Logger
@@ -23,18 +24,32 @@ import org.slf4j.LoggerFactory
 import org.springframework.scheduling.annotation.EnableScheduling
 import org.springframework.scheduling.annotation.SchedulingConfigurer
 import org.springframework.scheduling.config.ScheduledTaskRegistrar
-import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Duration
 
 @EnableScheduling
-class ScheduleTimeoutPresentations(private val timeoutPresentations: TimeoutPresentations) : SchedulingConfigurer {
+class ScheduleTimeoutPresentations(
+    private val timeoutPresentations: TimeoutPresentations,
+    private val interval: Duration,
+) : SchedulingConfigurer {
 
     private val logger: Logger = LoggerFactory.getLogger(ScheduleTimeoutPresentations::class.java)
+    private val runCounter = Metrics.counter("eudi_presentations_timeout_sweeper_runs_total")
+    private val expiredCounter = Metrics.counter("eudi_presentations_timeout_sweeper_expired_total")
+    private val errorCounter = Metrics.counter("eudi_presentations_timeout_sweeper_errors_total")
 
     override fun configureTasks(taskRegistrar: ScheduledTaskRegistrar) {
-        taskRegistrar.addFixedRateTask(2.seconds) {
+        taskRegistrar.addFixedRateTask(interval) {
             runBlocking(Dispatchers.IO) {
-                timeoutPresentations().also {
-                    if (it.isNotEmpty()) logger.info("Timed out ${it.size} presentations")
+                runCounter.increment()
+                try {
+                    timeoutPresentations().also {
+                        expiredCounter.increment(it.size.toDouble())
+                        if (it.isNotEmpty()) logger.info("Timed out ${it.size} presentations")
+                    }
+                } catch (t: Throwable) {
+                    errorCounter.increment()
+                    logger.warn("Failed to sweep timed out presentations", t)
+                    throw t
                 }
             }
         }

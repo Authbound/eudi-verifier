@@ -25,6 +25,7 @@ import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import io.micrometer.core.instrument.Metrics
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import org.slf4j.Logger
@@ -50,6 +51,7 @@ class AuthboundBackendCallbackPublisher(
 ) : PublishPresentationEvent {
 
     private val logger: Logger = LoggerFactory.getLogger(AuthboundBackendCallbackPublisher::class.java)
+    private val failureCounter = Metrics.counter("eudi_backend_callback_failures_total")
 
     override suspend fun invoke(event: PresentationEvent) {
         delegate(event)
@@ -75,9 +77,11 @@ class AuthboundBackendCallbackPublisher(
             }
             logger.info("Notified Authbound backend for tx={}", event.transactionId.value)
         } catch (e: ClientRequestException) {
+            failureCounter.increment()
             val status = e.response.status.value
             logger.warn("Authbound backend callback failed for tx={} status={}", event.transactionId.value, status, e)
         } catch (t: Throwable) {
+            failureCounter.increment()
             logger.warn("Authbound backend callback failed for tx={}", event.transactionId.value, t)
         }
     }

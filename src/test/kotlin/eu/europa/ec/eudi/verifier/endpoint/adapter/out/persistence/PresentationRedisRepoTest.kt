@@ -26,9 +26,10 @@ import eu.europa.ec.eudi.verifier.endpoint.domain.*
 import eu.europa.ec.eudi.verifier.endpoint.port.input.InitTransactionResponse
 import eu.europa.ec.eudi.verifier.endpoint.port.input.ProfileTO
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.PresentationEvent
-import kotlinx.coroutines.delay
+import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.StorePresentationResult
 import kotlinx.coroutines.reactor.awaitSingleOrNull
 import kotlinx.coroutines.test.runTest
+import kotlinx.datetime.TimeZone
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeEach
@@ -70,7 +71,7 @@ class PresentationRedisRepoTest {
     @Test
     fun `stores and loads presentation by id and request id`() = runTest {
         val presentation = requestedPresentation()
-        repo.storePresentation(presentation)
+        assertEquals(StorePresentationResult.Stored, repo.storePresentation(presentation))
 
         val loaded = repo.loadPresentationById(presentation.id)
         assertNotNull(loaded)
@@ -94,7 +95,9 @@ class PresentationRedisRepoTest {
 
     @Test
     fun `publishes and loads presentation events`() = runTest {
-        val transactionId = TransactionId("tx-events")
+        val presentation = requestedPresentation()
+        repo.storePresentation(presentation)
+        val transactionId = presentation.id
         val event = PresentationEvent.TransactionInitialized(
             transactionId = transactionId,
             timestamp = TestContext.testClock.now(),
@@ -102,7 +105,7 @@ class PresentationRedisRepoTest {
                 transactionId = transactionId.value,
                 clientId = "Verifier",
                 request = "request.jwt",
-                authorizationRequestUri = java.net.URI("haip-vp://"),
+                authorizationRequestUri = java.net.URI("haip-vp://wallet"),
             ),
             profile = ProfileTO.OpenId4VP,
         )
@@ -120,12 +123,11 @@ class PresentationRedisRepoTest {
         val shortRepo = PresentationRedisRepo(redis, TestContext.testClock, 150.milliseconds)
         val presentation = requestedPresentation()
         shortRepo.storePresentation(presentation)
-        delay(300)
+        Thread.sleep(300)
         val loaded = shortRepo.loadPresentationById(presentation.id)
         assertEquals(null, loaded)
     }
 
-    @Test
     fun `loadIncompletePresentationsOlderThan excludes submitted presentations`() = runTest {
         val requested = requestedPresentation()
         val requestObjectRetrieved = requested.retrieveRequestObject(clockAt(seconds = 1)).getOrThrow()
@@ -146,9 +148,9 @@ class PresentationRedisRepoTest {
         val submitted = requestObjectRetrieved.submit(clockAt(seconds = 2), WalletResponse.Error("error", null), null).getOrThrow()
         val timedOut = submitted.timedOut(clockAt(seconds = 3)).getOrThrow()
 
-        repo.storePresentation(requested)
-        repo.storePresentation(submitted)
-        repo.storePresentation(timedOut)
+        assertEquals(StorePresentationResult.Stored, repo.storePresentation(requested))
+        assertEquals(StorePresentationResult.Stored, repo.storePresentation(submitted))
+        assertEquals(StorePresentationResult.SkippedTerminal, repo.storePresentation(timedOut))
 
         val loaded = repo.loadPresentationById(requested.id)
 
@@ -164,15 +166,40 @@ class PresentationRedisRepoTest {
         val timedOut = requestObjectRetrieved.timedOut(clockAt(seconds = 2)).getOrThrow()
         val submitted = requestObjectRetrieved.submit(clockAt(seconds = 3), WalletResponse.Error("error", null), null).getOrThrow()
 
-        repo.storePresentation(requested)
-        repo.storePresentation(timedOut)
-        repo.storePresentation(submitted)
+        assertEquals(StorePresentationResult.Stored, repo.storePresentation(requested))
+        assertEquals(StorePresentationResult.Stored, repo.storePresentation(timedOut))
+        assertEquals(StorePresentationResult.SkippedTerminal, repo.storePresentation(submitted))
 
         val loaded = repo.loadPresentationById(requested.id)
 
         assertIs<Presentation.TimedOut>(loaded)
         assertEquals(timedOut.timedOutAt, loaded.timedOutAt)
         assertEquals(timedOut.requestObjectRetrievedAt, loaded.requestObjectRetrievedAt)
+    }
+
+    @Test
+    fun `claims expired incomplete presentations once`() = runTest {
+        val presentation = requestedPresentation()
+        repo.storePresentation(presentation)
+
+        val firstLoad = repo.loadIncompletePresentationsOlderThan(TestContext.testClock.now())
+        val secondLoad = repo.loadIncompletePresentationsOlderThan(TestContext.testClock.now())
+
+        assertEquals(listOf(presentation.id), firstLoad.map { it.id })
+        assertEquals(emptyList(), secondLoad.map { it.id })
+    }
+
+    @Test
+    fun `indexes retrieved presentations by original verifier deadline`() = runTest {
+        val requested = requestedPresentation()
+        val retrieved = requested.retrieveRequestObject(
+            Clock.fixed(TestContext.testClock.now() + 14.seconds, TimeZone.UTC),
+        ).getOrThrow()
+        repo.storePresentation(retrieved)
+
+        val loaded = repo.loadIncompletePresentationsOlderThan(TestContext.testClock.now() + 1.seconds)
+
+        assertEquals(listOf(retrieved.id), loaded.map { it.id })
     }
 
     private fun requestedPresentation(): Presentation.Requested {

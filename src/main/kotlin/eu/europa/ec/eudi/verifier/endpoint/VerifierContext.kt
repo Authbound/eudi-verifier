@@ -122,6 +122,7 @@ import java.util.Date
 import java.util.UUID
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
 private val log = LoggerFactory.getLogger(VerifierApplication::class.java)
 private const val REQUEST_ID_HEADER = "X-Request-Id"
@@ -148,7 +149,7 @@ private enum class PersistenceModeEnum {
 internal fun beans(clock: Clock) = BeanRegistrarDsl {
     registerBean { clock }
 
-    val verifierMaxAge = env.getProperty("verifier.maxAge")?.let { Duration.parse(it) } ?: 5.minutes
+    val verifierMaxAge = env.getProperty("verifier.maxAge")?.let { Duration.parse(it) } ?: 15.minutes
     val presentationRetention = env.getProperty("verifier.presentations.cleanup.maxAge")
         ?.let { Duration.parse(it) }
         ?: verifierMaxAge
@@ -157,6 +158,12 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
     }
     require(presentationRetention >= verifierMaxAge) {
         "'verifier.presentations.cleanup.maxAge' must be greater than or equal to 'verifier.maxAge'"
+    }
+    val timeoutCheckInterval = env.getProperty("verifier.presentations.timeoutCheckInterval")
+        ?.let { Duration.parse(it) }
+        ?: 60.seconds
+    require(timeoutCheckInterval.isPositive()) {
+        "'verifier.presentations.timeoutCheckInterval' cannot be zero or negative"
     }
     val includeErrorDetails = !isProduction(env)
     val persistenceMode =
@@ -491,7 +498,7 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
     //
     // Scheduled
     //
-    registerBean { ScheduleTimeoutPresentations(bean()) }
+    registerBean { ScheduleTimeoutPresentations(bean(), timeoutCheckInterval) }
     registerBean { ScheduleDeleteOldPresentations(bean()) }
     registerBean { RefreshTrustSources(bean(), bean(), bean()) }
 
@@ -1145,7 +1152,7 @@ private fun verifierConfig(environment: Environment, clock: Clock): VerifierConf
         environment.getProperty("verifier.response.mode", ResponseModeOption::class.java)
             ?: ResponseModeOption.DirectPostJwt
 
-    val maxAge = environment.getProperty("verifier.maxAge")?.let { Duration.parse(it) } ?: 5.minutes
+    val maxAge = environment.getProperty("verifier.maxAge")?.let { Duration.parse(it) } ?: 15.minutes
 
     val transactionDataHashAlgorithm = environment.getProperty("verifier.transactionData.hashAlgorithm", "sha-256")
         .let { configured ->

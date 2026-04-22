@@ -89,7 +89,7 @@ private fun JWSAlgorithm.toExpectedCurve(): Curve =
         JWSAlgorithm.ES256 -> Curve.P_256
         JWSAlgorithm.ES384 -> Curve.P_384
         JWSAlgorithm.ES512 -> Curve.P_521
-        else -> error("Unsupported JWS algorithm for KMS signing: ${name}")
+        else -> error("Unsupported JWS algorithm for KMS signing: $name")
     }
 
 private fun SdkBytes.toECPublicKey(): ECPublicKey {
@@ -136,7 +136,7 @@ private fun JWSAlgorithm.toKmsSigningAlgorithm(): SigningAlgorithmSpec =
         JWSAlgorithm.ES256 -> SigningAlgorithmSpec.ECDSA_SHA_256
         JWSAlgorithm.ES384 -> SigningAlgorithmSpec.ECDSA_SHA_384
         JWSAlgorithm.ES512 -> SigningAlgorithmSpec.ECDSA_SHA_512
-        else -> error("Unsupported JWS algorithm for KMS signing: ${name}")
+        else -> error("Unsupported JWS algorithm for KMS signing: $name")
     }
 
 private fun JWSAlgorithm.toDigestAlgorithm(): String =
@@ -144,7 +144,7 @@ private fun JWSAlgorithm.toDigestAlgorithm(): String =
         JWSAlgorithm.ES256 -> "SHA-256"
         JWSAlgorithm.ES384 -> "SHA-384"
         JWSAlgorithm.ES512 -> "SHA-512"
-        else -> error("Unsupported JWS algorithm for KMS signing: ${name}")
+        else -> error("Unsupported JWS algorithm for KMS signing: $name")
     }
 
 private fun JWSAlgorithm.signatureLengthBytes(): Int =
@@ -152,7 +152,7 @@ private fun JWSAlgorithm.signatureLengthBytes(): Int =
         JWSAlgorithm.ES256 -> 64
         JWSAlgorithm.ES384 -> 96
         JWSAlgorithm.ES512 -> 132
-        else -> error("Unsupported JWS algorithm for KMS signing: ${name}")
+        else -> error("Unsupported JWS algorithm for KMS signing: $name")
     }
 
 // Converts ASN.1 DER ECDSA signature to raw R|S format (P1363)

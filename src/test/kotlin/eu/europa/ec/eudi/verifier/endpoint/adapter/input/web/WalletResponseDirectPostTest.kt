@@ -35,7 +35,7 @@ import kotlin.test.assertNull
 @VerifierApplicationTest
 @TestPropertySource(
     properties = [
-        "verifier.maxAge=PT6400M",
+        "verifier.maxAge=PT15M",
         "verifier.response.mode=DirectPost",
         "verifier.clientMetadata.responseEncryption.algorithm=ECDH-ES",
         "verifier.clientMetadata.responseEncryption.method=A128CBC-HS256",

@@ -22,5 +22,10 @@ import eu.europa.ec.eudi.verifier.endpoint.domain.Presentation
  */
 fun interface StorePresentation {
 
-    suspend operator fun invoke(presentation: Presentation)
+    suspend operator fun invoke(presentation: Presentation): StorePresentationResult
+}
+
+sealed interface StorePresentationResult {
+    data object Stored : StorePresentationResult
+    data object SkippedTerminal : StorePresentationResult
 }
