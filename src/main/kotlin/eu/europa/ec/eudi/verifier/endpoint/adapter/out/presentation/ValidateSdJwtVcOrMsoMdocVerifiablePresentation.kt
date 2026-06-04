@@ -300,6 +300,12 @@ private fun TrustAuthorityResolutionError.toWalletResponseValidationError(
             WalletResponseValidationError.InvalidVpToken(
                 "Credential query '${queryId.value}' did not resolve trusted certificates",
             )
+
+        is TrustAuthorityResolutionError.TrustedListFetchFailed ->
+            WalletResponseValidationError.InvalidVpToken(
+                "Credential query '${queryId.value}' failed to fetch trusted list '${location}'" +
+                    (message?.let { ": $it" } ?: ""),
+            )
     }
 
 private fun Collection<SdJwtVcValidationError>.toJson(): JsonArray =

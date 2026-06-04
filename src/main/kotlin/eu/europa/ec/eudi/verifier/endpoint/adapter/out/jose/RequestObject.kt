@@ -60,7 +60,7 @@ internal fun requestObjectFromDomain(
             is ResponseMode.DcApiJwt -> OpenId4VPSpec.RESPONSE_MODE_DC_API_JWT
         },
         expectedOrigins = when (val responseMode = presentation.responseMode) {
-            is ResponseMode.DcApiJwt -> responseMode.expectedOrigins.map { it.toExternalForm().removeSuffix("/") }
+            is ResponseMode.DcApiJwt -> responseMode.expectedOrigins
             else -> null
         },
         responseUri = verifierConfig.responseUriBuilder(presentation.requestId),

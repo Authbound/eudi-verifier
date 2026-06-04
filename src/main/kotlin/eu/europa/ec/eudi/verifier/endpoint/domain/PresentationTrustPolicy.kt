@@ -15,20 +15,66 @@
  */
 package eu.europa.ec.eudi.verifier.endpoint.domain
 
-data class PresentationTrustPolicy(
-    private val authoritiesByQueryId: Map<QueryId, List<TrustedAuthority>>,
+class PresentationTrustPolicy private constructor(
+    private val credentialTrustByQueryId: Map<QueryId, CredentialTrust>,
 ) {
     fun authoritiesFor(queryId: QueryId): List<TrustedAuthority>? =
-        authoritiesByQueryId[queryId]
+        credentialTrustByQueryId[queryId]?.trustedAuthorities
+
+    fun serviceTypeFiltersFor(queryId: QueryId): Set<ProviderKind> =
+        credentialTrustByQueryId[queryId]?.serviceTypeFilters ?: ProviderKind.eudiCredentialProviderKinds
 
     companion object {
         fun from(dcql: DCQL): PresentationTrustPolicy =
             PresentationTrustPolicy(
                 dcql.credentials.value
                     .mapNotNull { credential ->
-                        credential.trustedAuthorities?.let { credential.id to it }
+                        credential.trustedAuthorities?.let {
+                            credential.id to CredentialTrust(
+                                trustedAuthorities = it,
+                                serviceTypeFilters = credential.serviceTypeFilters(),
+                            )
+                        }
                     }
                     .toMap(),
             )
     }
+}
+
+private data class CredentialTrust(
+    val trustedAuthorities: List<TrustedAuthority>,
+    val serviceTypeFilters: Set<ProviderKind>,
+)
+
+private fun CredentialQuery.serviceTypeFilters(): Set<ProviderKind> =
+    when (format) {
+        Format.MsoMdoc ->
+            if (metaMsoMdoc?.doctypeValue?.value?.isPidTypeIdentifier() == true) {
+                ProviderKind.eudiPidProviderKinds
+            } else {
+                ProviderKind.eudiAttestationProviderKinds
+            }
+
+        Format.SdJwtVc -> {
+            val vctValues = metaSdJwtVc?.vctValues.orEmpty()
+            buildSet {
+                if (vctValues.any { it.isPidTypeIdentifier() }) {
+                    addAll(ProviderKind.eudiPidProviderKinds)
+                }
+                if (vctValues.any { !it.isPidTypeIdentifier() }) {
+                    addAll(ProviderKind.eudiAttestationProviderKinds)
+                }
+            }.ifEmpty { ProviderKind.eudiCredentialProviderKinds }
+        }
+
+        else -> ProviderKind.eudiCredentialProviderKinds
+    }
+
+private fun String.isPidTypeIdentifier(): Boolean {
+    val normalized = lowercase()
+    return normalized == "pid" ||
+        normalized.contains(":pid:") ||
+        normalized.endsWith(":pid") ||
+        normalized.contains(".pid.") ||
+        normalized.endsWith(".pid")
 }

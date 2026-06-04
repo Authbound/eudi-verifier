@@ -30,6 +30,7 @@ import kotlinx.io.bytestring.decodeToByteString
 import kotlinx.io.bytestring.decodeToString
 import kotlinx.serialization.json.*
 import java.net.URL
+import java.security.MessageDigest
 import kotlin.test.*
 import kotlin.time.Duration.Companion.days
 
@@ -114,6 +115,25 @@ class InitTransactionTest {
         }
 
     @Test
+    fun `when configured request uri method is post response advertises post`() = runTest {
+        val input = InitTransactionTO(
+            dcqlQuery(),
+            nonce = "nonce",
+            jarMode = EmbedModeTO.ByReference,
+        )
+
+        val useCase = TestContext.initTransaction(
+            verifierConfig.copy(requestUriMethod = RequestUriMethod.Post),
+            EmbedOption.byReference { _ -> uri },
+        )
+
+        val jwtSecuredAuthorizationRequest = assertIs<InitTransactionResponse.JwtSecuredAuthorizationRequestTO>(
+            useCase(input).getOrElse { fail("Unexpected $it") },
+        )
+        assertEquals(RequestUriMethodTO.Post, jwtSecuredAuthorizationRequest.requestUriMethod)
+    }
+
+    @Test
     fun `when input misses DCQL validation error is raised`() = runTest {
         // Input is invalid.
         //  Misses DCQL
@@ -183,7 +203,7 @@ class InitTransactionTest {
             dcqlQuery(),
             nonce = "nonce",
             responseMode = ResponseModeTO.DcApiJwt,
-            expectedOrigins = listOf("https://merchant.example"),
+            expectedOrigins = listOf("https://MERCHANT.example:443/"),
             jarMode = EmbedModeTO.ByReference,
         )
 
@@ -198,7 +218,31 @@ class InitTransactionTest {
         val presentation = assertIs<Presentation.Requested>(loadPresentationById(testTransactionId))
         val responseMode = assertIs<ResponseMode.DcApiJwt>(presentation.responseMode)
         assertEquals(ResponseModeOption.DcApiJwt, responseMode.option)
-        assertEquals(URL("https://merchant.example"), responseMode.expectedOrigins.head)
+        assertEquals("https://merchant.example", responseMode.expectedOrigins.head)
+    }
+
+    @Test
+    fun `when haip profile uses dc api response mode request by reference succeeds`() = runTest {
+        val input = InitTransactionTO(
+            dcqlQuery(),
+            nonce = "nonce",
+            responseMode = ResponseModeTO.DcApiJwt,
+            expectedOrigins = listOf("https://merchant.example"),
+            jarMode = EmbedModeTO.ByReference,
+            profile = ProfileTO.HAIP,
+        )
+
+        val useCase: InitTransaction = TestContext.initTransaction(
+            verifierConfig.copy(verifierId = haipVerifierId()),
+            EmbedOption.byReference { _ -> uri },
+        )
+
+        assertIs<InitTransactionResponse.JwtSecuredAuthorizationRequestTO>(
+            useCase(input).getOrElse { fail("Unexpected $it") },
+        )
+        val presentation = assertIs<Presentation.Requested>(loadPresentationById(testTransactionId))
+        assertEquals(Profile.HAIP, presentation.profile)
+        assertIs<ResponseMode.DcApiJwt>(presentation.responseMode)
     }
 
     @Test
@@ -468,6 +512,14 @@ class InitTransactionTest {
     private suspend fun loadPresentationById(id: TransactionId) = TestContext.loadPresentationById(id)
 
     private fun dcqlQuery() = VerifierApiClient.loadInitTransactionTO("fixtures/eudi/00-dcql.json").dcqlQuery!!
+
+    private fun haipVerifierId(): VerifierId.X509Hash {
+        val certificate = TestContext.signingCertificateChain.first()
+        val encodedHash = base64UrlNoPadding.encode(
+            MessageDigest.getInstance("SHA-256").digest(certificate.encoded),
+        )
+        return VerifierId.X509Hash(encodedHash, verifierConfig.verifierId.jarSigning)
+    }
 
     private fun dcqlWithTrustedAuthorities(): DCQL {
         val dcql = dcqlQuery()

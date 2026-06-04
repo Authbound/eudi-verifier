@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test
 import java.net.URL
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 class TrustAuthorityResolverTest {
@@ -42,8 +43,12 @@ class TrustAuthorityResolverTest {
 
     @Test
     fun `etsi trusted authority resolves trusted certificates`() = runTest {
+        var capturedConfig: TrustedListConfig? = null
         val resolver = TrustAuthorityResolverLive(
-            FetchLOTLCertificates { Either.Right(TestContext.signingCertificateChain) },
+            FetchLOTLCertificates { config ->
+                capturedConfig = config
+                Either.Right(TestContext.signingCertificateChain)
+            },
         )
         val policy = PresentationTrustPolicy.from(dcqlWithTrustedAuthorities())
 
@@ -52,6 +57,41 @@ class TrustAuthorityResolverTest {
         )
 
         assertEquals(TestContext.signingCertificateChain.size, trust.rootCACertificates.size)
+        assertEquals(ProviderKind.eudiAttestationProviderKinds, assertNotNull(capturedConfig).serviceTypeFilters)
+    }
+
+    @Test
+    fun `etsi trusted authority on pid query resolves pid-compatible provider certificates`() = runTest {
+        var capturedConfig: TrustedListConfig? = null
+        val resolver = TrustAuthorityResolverLive(
+            FetchLOTLCertificates { config ->
+                capturedConfig = config
+                Either.Right(TestContext.signingCertificateChain)
+            },
+        )
+        val policy = PresentationTrustPolicy.from(pidDcqlWithTrustedAuthorities())
+
+        val trust = assertIs<X5CShouldBe.Trusted>(
+            resolver.resolve(QueryId("pid"), policy).getOrNull(),
+        )
+
+        assertEquals(TestContext.signingCertificateChain.size, trust.rootCACertificates.size)
+        assertEquals(ProviderKind.eudiPidProviderKinds, assertNotNull(capturedConfig).serviceTypeFilters)
+    }
+
+    @Test
+    fun `etsi trusted authority fetch failures are returned`() = runTest {
+        val resolver = TrustAuthorityResolverLive(
+            FetchLOTLCertificates { Either.Left(IllegalStateException("network down")) },
+        )
+        val policy = PresentationTrustPolicy.from(dcqlWithTrustedAuthorities())
+
+        val error = assertIs<TrustAuthorityResolutionError.TrustedListFetchFailed>(
+            resolver.resolve(QueryId("wa_driver_license"), policy).leftOrNull(),
+        )
+
+        assertEquals("https://trust.example/lote.jwt", error.location)
+        assertEquals("network down", error.message)
     }
 
     @Test
@@ -141,4 +181,19 @@ class TrustAuthorityResolverTest {
             ),
         )
     }
+
+    private fun pidDcqlWithTrustedAuthorities(): DCQL =
+        DCQL(
+            credentials = Credentials(
+                listOf(
+                    CredentialQuery.mdoc(
+                        id = QueryId("pid"),
+                        msoMdocMeta = DCQLMetaMsoMdocExtensions(MsoMdocDocType("eu.europa.ec.eudi.pid.1")),
+                        trustedAuthorities = listOf(
+                            TrustedAuthority.trustedLists(listOf(URL("https://trust.example/lote.jwt"))),
+                        ),
+                    ),
+                ),
+            ),
+        )
 }

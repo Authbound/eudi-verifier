@@ -180,8 +180,8 @@ internal class VerifierApi(
                     "HaipNotSupported.EncryptionAlgorithmECDHESMustBeSupported"
                 ValidationError.HaipNotSupported.EncryptionMethodsA128GCMAndA256GCMMustBeSupported ->
                     "HaipNotSupported.EncryptionMethodsA128GCMAndA256GCMMustBeSupported"
-                ValidationError.HaipNotSupported.ResponseModeDirectPostJwtMustBeUsed ->
-                    "HaipNotSupported.ResponseModeDirectPostJwtMustBeUsed"
+                ValidationError.HaipNotSupported.ResponseModeDirectPostJwtOrDcApiJwtMustBeUsed ->
+                    "HaipNotSupported.ResponseModeDirectPostJwtOrDcApiJwtMustBeUsed"
                 ValidationError.HaipNotSupported.AuthorizationRequestMustBeProvidedByReference ->
                     "HaipNotSupported.AuthorizationRequestMustBeProvidedByReference"
             }

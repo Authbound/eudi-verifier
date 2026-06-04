@@ -15,6 +15,7 @@
  */
 package eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso
 
+import arrow.core.NonEmptyList
 import com.nimbusds.jose.jwk.JWK
 import eu.europa.ec.eudi.verifier.endpoint.domain.Nonce
 import eu.europa.ec.eudi.verifier.endpoint.domain.Presentation
@@ -39,7 +40,7 @@ sealed interface HandoverInfo {
     }
 
     data class OpenID4VPDCAPIHandoverInfo(
-        val origin: URL,
+        val expectedOrigins: NonEmptyList<String>,
         val nonce: Nonce,
         val ephemeralEncryptionKey: JWK?,
     ) : HandoverInfo {
@@ -68,7 +69,7 @@ sealed interface HandoverInfo {
                     responseUri = config.responseUriBuilder(presentation.requestId),
                 )
                 is ResponseMode.DcApiJwt -> OpenID4VPDCAPIHandoverInfo(
-                    origin = responseMode.expectedOrigins.head,
+                    expectedOrigins = responseMode.expectedOrigins,
                     nonce = presentation.nonce,
                     ephemeralEncryptionKey = responseMode.ephemeralResponseEncryptionKey.toPublicJWK(),
                 )

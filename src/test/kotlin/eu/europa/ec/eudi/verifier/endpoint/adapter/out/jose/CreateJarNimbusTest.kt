@@ -198,7 +198,7 @@ class CreateJarNimbusTest {
         val requested = requestedPresentation(
             ResponseMode.DcApiJwt(
                 responseEncryptionKey,
-                listOf(URL("https://merchant.example")).toNonEmptyListOrNull()!!,
+                listOf("https://merchant.example").toNonEmptyListOrNull()!!,
             ),
         )
 

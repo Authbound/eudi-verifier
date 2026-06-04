@@ -64,9 +64,6 @@ enum class RequestUriMethodTO {
 
     @SerialName(OpenId4VPSpec.REQUEST_URI_METHOD_POST)
     Post,
-
-    @SerialName("post_get")
-    PostOrGet,
 }
 
 /**
@@ -160,7 +157,7 @@ sealed interface ValidationError {
         data object SelfSignedCertificateMustNotBeUsed : HaipNotSupported
         data object EncryptionAlgorithmECDHESMustBeSupported : HaipNotSupported
         data object EncryptionMethodsA128GCMAndA256GCMMustBeSupported : HaipNotSupported
-        data object ResponseModeDirectPostJwtMustBeUsed : HaipNotSupported
+        data object ResponseModeDirectPostJwtOrDcApiJwtMustBeUsed : HaipNotSupported
         data object AuthorizationRequestMustBeProvidedByReference : HaipNotSupported
     }
 }
@@ -423,18 +420,19 @@ class InitTransactionLive(
         }
     }
 
-    private fun Raise<ValidationError>.expectedOrigins(initTransaction: InitTransactionTO): NonEmptyList<URL> =
+    private fun Raise<ValidationError>.expectedOrigins(initTransaction: InitTransactionTO): NonEmptyList<String> =
         initTransaction.expectedOrigins
             ?.map { origin ->
                 Either.catch {
                     val uri = URI(origin)
-                    val url = uri.toURL()
-                    require(uri.scheme == "https") { "Expected origin must use https" }
+                    require(uri.scheme.equals("https", ignoreCase = true)) { "Expected origin must use https" }
                     require(!uri.host.isNullOrBlank()) { "Expected origin must include host" }
+                    require(uri.userInfo == null) { "Expected origin must not include user info" }
                     require(uri.rawPath.isNullOrBlank() || uri.rawPath == "/") { "Expected origin must not include path" }
                     require(uri.rawQuery == null) { "Expected origin must not include query" }
                     require(uri.rawFragment == null) { "Expected origin must not include fragment" }
-                    url
+                    val port = uri.port.takeIf { it != -1 && it != 443 }?.let { ":$it" } ?: ""
+                    "https://${uri.host.lowercase()}$port"
                 }.getOrElse { raise(ValidationError.InvalidExpectedOrigins) }
             }
             ?.toNonEmptyListOrNull()
@@ -459,7 +457,6 @@ class InitTransactionLive(
         when (initTransaction.requestUriMethod) {
             RequestUriMethodTO.Get -> RequestUriMethod.Get
             RequestUriMethodTO.Post -> RequestUriMethod.Post
-            RequestUriMethodTO.PostOrGet -> RequestUriMethod.PostOrGet
             null -> verifierConfig.requestUriMethod
         }
 
@@ -570,7 +567,6 @@ private fun RequestUriMethod.toTO(): RequestUriMethodTO =
     when (this) {
         RequestUriMethod.Get -> RequestUriMethodTO.Get
         RequestUriMethod.Post -> RequestUriMethodTO.Post
-        RequestUriMethod.PostOrGet -> RequestUriMethodTO.PostOrGet
     }
 
 private fun <T : Any, U : T> Collection<T>.containsAny(first: U, vararg rest: U): Boolean = first in this || rest.any { it in this }
@@ -633,8 +629,11 @@ private fun interface ProfileValidator {
                 ValidationError.HaipNotSupported.SelfSignedCertificateMustNotBeUsed
             }
 
-            ensure(presentation.responseMode is ResponseMode.DirectPostJwt) {
-                ValidationError.HaipNotSupported.ResponseModeDirectPostJwtMustBeUsed
+            ensure(
+                presentation.responseMode is ResponseMode.DirectPostJwt ||
+                    presentation.responseMode is ResponseMode.DcApiJwt,
+            ) {
+                ValidationError.HaipNotSupported.ResponseModeDirectPostJwtOrDcApiJwtMustBeUsed
             }
 
             ensure(jarMode is EmbedOption.ByReference) {

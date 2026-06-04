@@ -719,7 +719,7 @@ class PresentationRedisRepo(
         is ResponseMode.DirectPostJwt -> DirectPostJwtRecord(jwkJson = ephemeralResponseEncryptionKey.toJSONString())
         is ResponseMode.DcApiJwt -> DcApiJwtRecord(
             jwkJson = ephemeralResponseEncryptionKey.toJSONString(),
-            expectedOrigins = expectedOrigins.map { it.toExternalForm() },
+            expectedOrigins = expectedOrigins,
         )
     }
 
@@ -728,7 +728,7 @@ class PresentationRedisRepo(
         is DirectPostJwtRecord -> ResponseMode.DirectPostJwt(JWK.parse(jwkJson))
         is DcApiJwtRecord -> ResponseMode.DcApiJwt(
             JWK.parse(jwkJson),
-            expectedOrigins.map { URL(it) }.toNonEmptyListOrNull()!!,
+            expectedOrigins.toNonEmptyListOrNull()!!,
         )
     }
 

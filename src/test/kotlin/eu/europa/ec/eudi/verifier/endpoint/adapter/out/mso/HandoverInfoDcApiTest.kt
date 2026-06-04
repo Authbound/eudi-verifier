@@ -29,13 +29,17 @@ import java.net.URL
 import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
 
 class HandoverInfoDcApiTest {
 
     @Test
     fun `dc api response mode uses dc api handover info`() {
-        val expectedOrigin = URL("https://merchant.example")
+        val expectedOrigins = listOf(
+            "https://merchant.example",
+            "https://checkout.example",
+        ).toNonEmptyListOrNull()!!
         val requested = Presentation.Requested(
             id = TransactionId("tx-${UUID.randomUUID()}"),
             initiatedAt = TestContext.testClock.now(),
@@ -50,7 +54,7 @@ class HandoverInfoDcApiTest {
                     .algorithm(JWEAlgorithm.ECDH_ES)
                     .keyID(UUID.randomUUID().toString())
                     .generate(),
-                listOf(expectedOrigin).toNonEmptyListOrNull()!!,
+                expectedOrigins,
             ),
             getWalletResponseMethod = GetWalletResponseMethod.Poll,
             issuerChain = null,
@@ -62,8 +66,36 @@ class HandoverInfoDcApiTest {
             HandoverInfo(retrieved, verifierConfig()),
         )
 
-        assertEquals(expectedOrigin, handover.origin)
+        assertEquals(expectedOrigins, handover.expectedOrigins)
         assertEquals(requested.nonce, handover.nonce)
+    }
+
+    @Test
+    fun `dc api handover matching tries later expected origins`() {
+        val expectedOrigins = listOf(
+            "https://merchant.example",
+            "https://checkout.example",
+        ).toNonEmptyListOrNull()!!
+        val handover = HandoverInfo.OpenID4VPDCAPIHandoverInfo(
+            expectedOrigins = expectedOrigins,
+            nonce = Nonce("nonce-${UUID.randomUUID()}"),
+            ephemeralEncryptionKey = ECKeyGenerator(Curve.P_256)
+                .keyUse(KeyUse.ENCRYPTION)
+                .algorithm(JWEAlgorithm.ECDH_ES)
+                .keyID(UUID.randomUUID().toString())
+                .generate()
+                .toPublicJWK(),
+        )
+        val candidates = handover.toHandovers()
+        var attempts = 0
+
+        val matched = handover.anyHandoverMatches { candidate ->
+            attempts++
+            candidate == candidates[1]
+        }
+
+        assertTrue(matched)
+        assertEquals(2, attempts)
     }
 
     private fun verifierConfig(): VerifierConfig =

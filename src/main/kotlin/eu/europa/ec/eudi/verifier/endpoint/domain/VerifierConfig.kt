@@ -63,7 +63,6 @@ sealed interface EmbedOption<in ID> {
 enum class RequestUriMethod {
     Get,
     Post,
-    PostOrGet,
 }
 
 /**
@@ -89,7 +88,7 @@ sealed interface ResponseMode {
 
     data class DcApiJwt(
         val ephemeralResponseEncryptionKey: JWK,
-        val expectedOrigins: NonEmptyList<URL>,
+        val expectedOrigins: NonEmptyList<String>,
     ) : ResponseMode {
         init {
             require(ephemeralResponseEncryptionKey.isPrivate)
@@ -385,10 +384,34 @@ private fun SanType.asInt() =
 
 typealias TrustSourceConfig = Ior<TrustedListConfig, KeyStoreConfig>
 
-enum class ProviderKind(val value: String) {
-    PIDProvider("http://uri.etsi.org/Svc/Svctype/Provider/PID"),
-    QEEAProvider("http://uri.etsi.org/TrstSvc/Svctype/EAA/Q"),
-    PubEAAProvider("http://uri.etsi.org/TrstSvc/Svctype/EAA/Pub-EAA"),
+enum class ProviderKind(val value: String, vararg additionalServiceTypeIdentifiers: String) {
+    PIDProvider(
+        "https://ewc-consortium.github.io/ewc-trust-list/TrstSvc/Svctype/PID",
+        "http://uri.etsi.org/Svc/Svctype/Provider/PID",
+        "http://uri.etsi.org/19602/SvcType/PID/Issuance",
+        "http://uri.etsi.org/19602/SvcType/EAA/Issuance",
+    ),
+    EAAProvider(
+        "http://uri.etsi.org/TrstSvc/Svctype/EAA",
+        "http://uri.etsi.org/19602/SvcType/EAA/Issuance",
+    ),
+    QEEAProvider(
+        "http://uri.etsi.org/TrstSvc/Svctype/EAA/Q",
+        "http://uri.etsi.org/19602/SvcType/QEAA/Issuance",
+        "http://uri.etsi.org/19602/SvcType/EAA/Q/Issuance",
+    ),
+    PubEAAProvider(
+        "http://uri.etsi.org/TrstSvc/Svctype/EAA/Pub-EAA",
+        "http://uri.etsi.org/19602/SvcType/PubEAA/Issuance",
+    );
+
+    val serviceTypeIdentifiers: Set<String> = setOf(value, *additionalServiceTypeIdentifiers)
+
+    companion object {
+        val eudiPidProviderKinds = setOf(PIDProvider)
+        val eudiAttestationProviderKinds = setOf(EAAProvider, QEEAProvider, PubEAAProvider)
+        val eudiCredentialProviderKinds = setOf(PIDProvider, EAAProvider, QEEAProvider, PubEAAProvider)
+    }
 }
 
 data class TrustedListConfig(
@@ -396,6 +419,7 @@ data class TrustedListConfig(
     val serviceTypeFilter: ProviderKind?,
     val refreshInterval: String = "0 0 * * * *",
     val keystoreConfig: KeyStoreConfig?,
+    val serviceTypeFilters: Set<ProviderKind> = serviceTypeFilter?.let(::setOf).orEmpty(),
 )
 
 data class KeyStoreConfig(
