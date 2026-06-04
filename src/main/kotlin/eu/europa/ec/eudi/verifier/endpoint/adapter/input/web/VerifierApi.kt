@@ -156,6 +156,10 @@ internal class VerifierApi(
                     "UnsupportedFormat"
                 ValidationError.InvalidIssuerChain ->
                     "InvalidIssuerChain"
+                ValidationError.MissingExpectedOrigins ->
+                    "MissingExpectedOrigins"
+                ValidationError.InvalidExpectedOrigins ->
+                    "InvalidExpectedOrigins"
                 ValidationError.ContainsBothAuthorizationRequestUriAndAuthorizationRequestScheme ->
                     "ContainsBothAuthorizationRequestUriAndAuthorizationRequestScheme"
                 ValidationError.InvalidAuthorizationRequestUri ->

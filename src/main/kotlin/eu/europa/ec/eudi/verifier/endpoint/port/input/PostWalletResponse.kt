@@ -251,8 +251,10 @@ class PostWalletResponseLive(
 
             val responseObject = responseObject(walletResponse, presentation).bind()
 
-            // Verify response `state` is RequestId
-            ensure(presentation.requestId.value == responseObject.state) { WalletResponseValidationError.IncorrectState }
+            // DC API responses do not carry state; other response modes must bind to the request id.
+            if (presentation.responseMode !is ResponseMode.DcApiJwt) {
+                ensure(presentation.requestId.value == responseObject.state) { WalletResponseValidationError.IncorrectState }
+            }
 
             // Submit the response
             val submitted = submit(presentation, responseObject)
@@ -331,6 +333,33 @@ class PostWalletResponseLive(
                             WalletResponseValidationError.UnexpectedResponseMode(
                                 presentation.requestId,
                                 expected = ResponseModeOption.DirectPostJwt,
+                                actual = ResponseModeOption.DirectPost,
+                            )
+                        }
+                        walletResponse.response
+                    }
+
+                    is AuthorisationResponse.DirectPostJwt ->
+                        verifyEncryptedResponse(
+                            ephemeralResponseEncryptionKey = responseMode.ephemeralResponseEncryptionKey,
+                            encryptedResponse = walletResponse.encryptedResponse,
+                            apv = presentation.nonce,
+                        ).getOrElse {
+                            when (it) {
+                                is BadJOSEException -> raise(WalletResponseValidationError.InvalidEncryptedResponse(it))
+                                else -> throw it
+                            }
+                        }
+                }
+            }
+
+            is ResponseMode.DcApiJwt -> {
+                when (walletResponse) {
+                    is AuthorisationResponse.DirectPost -> {
+                        ensure(walletResponse.isErrorResponse()) {
+                            WalletResponseValidationError.UnexpectedResponseMode(
+                                presentation.requestId,
+                                expected = ResponseModeOption.DcApiJwt,
                                 actual = ResponseModeOption.DirectPost,
                             )
                         }

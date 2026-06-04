@@ -72,6 +72,7 @@ enum class RequestUriMethod {
 enum class ResponseModeOption {
     DirectPost,
     DirectPostJwt,
+    DcApiJwt,
 }
 
 sealed interface ResponseMode {
@@ -85,12 +86,22 @@ sealed interface ResponseMode {
             require(ephemeralResponseEncryptionKey.isPrivate)
         }
     }
+
+    data class DcApiJwt(
+        val ephemeralResponseEncryptionKey: JWK,
+        val expectedOrigins: NonEmptyList<URL>,
+    ) : ResponseMode {
+        init {
+            require(ephemeralResponseEncryptionKey.isPrivate)
+        }
+    }
 }
 
 val ResponseMode.option: ResponseModeOption
     get() = when (this) {
         ResponseMode.DirectPost -> ResponseModeOption.DirectPost
         is ResponseMode.DirectPostJwt -> ResponseModeOption.DirectPostJwt
+        is ResponseMode.DcApiJwt -> ResponseModeOption.DcApiJwt
     }
 
 data class ResponseEncryptionOption(

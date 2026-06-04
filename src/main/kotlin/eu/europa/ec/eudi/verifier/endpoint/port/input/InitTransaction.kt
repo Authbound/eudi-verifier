@@ -79,6 +79,9 @@ enum class ResponseModeTO {
 
     @SerialName(OpenId4VPSpec.RESPONSE_MODE_DIRECT_POST_JWT)
     DirectPostJwt,
+
+    @SerialName(OpenId4VPSpec.RESPONSE_MODE_DC_API_JWT)
+    DcApiJwt,
 }
 
 /**
@@ -120,6 +123,7 @@ data class InitTransactionTO(
     @SerialName(OpenId4VPSpec.REQUEST_URI_METHOD) val requestUriMethod: RequestUriMethodTO? = null,
     @SerialName("wallet_response_redirect_uri_template") val redirectUriTemplate: String? = null,
     @SerialName(OpenId4VPSpec.TRANSACTION_DATA) val transactionData: List<JsonObject>? = null,
+    @SerialName(OpenId4VPSpec.EXPECTED_ORIGINS) val expectedOrigins: List<String>? = null,
     @SerialName("issuer_chain") val issuerChain: String? = null,
     @SerialName("authorization_request_scheme") val authorizationRequestScheme: String? = null,
     @SerialName("authorization_request_uri") val authorizationRequestUri: String? = null,
@@ -140,6 +144,8 @@ sealed interface ValidationError {
     data object InvalidTransactionData : ValidationError
     data object UnsupportedFormat : ValidationError
     data object InvalidIssuerChain : ValidationError
+    data object MissingExpectedOrigins : ValidationError
+    data object InvalidExpectedOrigins : ValidationError
     data object ContainsBothAuthorizationRequestUriAndAuthorizationRequestScheme : ValidationError
     data object InvalidAuthorizationRequestUri : ValidationError
     data object InvalidAuthorizationRequestScheme : ValidationError
@@ -389,10 +395,11 @@ class InitTransactionLive(
     /**
      * Gets the [ResponseMode] for the provided [InitTransactionTO].
      */
-    private fun responseMode(initTransaction: InitTransactionTO): ResponseMode {
+    private fun Raise<ValidationError>.responseMode(initTransaction: InitTransactionTO): ResponseMode {
         val responseModeOption = when (initTransaction.responseMode) {
             ResponseModeTO.DirectPost -> ResponseModeOption.DirectPost
             ResponseModeTO.DirectPostJwt -> ResponseModeOption.DirectPostJwt
+            ResponseModeTO.DcApiJwt -> ResponseModeOption.DcApiJwt
             null -> verifierConfig.responseModeOption
         }
 
@@ -402,8 +409,30 @@ class InitTransactionLive(
                 val responseEncryptionKey = generateEphemeralEncryptionKeyPair().getOrThrow()
                 ResponseMode.DirectPostJwt(responseEncryptionKey)
             }
+            ResponseModeOption.DcApiJwt -> {
+                val expectedOrigins = expectedOrigins(initTransaction)
+                val responseEncryptionKey = generateEphemeralEncryptionKeyPair().getOrThrow()
+                ResponseMode.DcApiJwt(responseEncryptionKey, expectedOrigins)
+            }
         }
     }
+
+    private fun Raise<ValidationError>.expectedOrigins(initTransaction: InitTransactionTO): NonEmptyList<URL> =
+        initTransaction.expectedOrigins
+            ?.map { origin ->
+                Either.catch {
+                    val uri = URI(origin)
+                    val url = uri.toURL()
+                    require(uri.scheme == "https") { "Expected origin must use https" }
+                    require(!uri.host.isNullOrBlank()) { "Expected origin must include host" }
+                    require(uri.rawPath.isNullOrBlank() || uri.rawPath == "/") { "Expected origin must not include path" }
+                    require(uri.rawQuery == null) { "Expected origin must not include query" }
+                    require(uri.rawFragment == null) { "Expected origin must not include fragment" }
+                    url
+                }.getOrElse { raise(ValidationError.InvalidExpectedOrigins) }
+            }
+            ?.toNonEmptyListOrNull()
+            ?: raise(ValidationError.MissingExpectedOrigins)
 
     /**
      * Gets the JAR [EmbedOption] for the provided [InitTransactionTO].

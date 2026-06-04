@@ -115,10 +115,9 @@ class CreateJarNimbus : CreateJar {
         val responseType = ResponseType(*r.responseType.map { ResponseType.Value(it) }.toTypedArray())
         val clientId = ClientID(r.verifierId.clientId)
         val scope = Scope(*r.scope.map { Scope.Value(it) }.toTypedArray())
-        val state = State(r.state)
 
         val authorizationRequestClaims = with(AuthorizationRequest.Builder(responseType, clientId)) {
-            state(state)
+            r.state?.let { state(State(it)) }
             if (scope.isNotEmpty()) {
                 scope(scope)
             }
@@ -136,6 +135,7 @@ class CreateJarNimbus : CreateJar {
             claim(OpenId4VPSpec.NONCE, r.nonce)
             optionalClaim(OpenId4VPSpec.CLIENT_METADATA, clientMetaData?.toJSONObject())
             optionalClaim(OpenId4VPSpec.RESPONSE_URI, r.responseUri?.toExternalForm())
+            optionalClaim(OpenId4VPSpec.EXPECTED_ORIGINS, r.expectedOrigins)
             optionalClaim(OpenId4VPSpec.DCQL_QUERY, r.dcqlQuery?.toJackson())
             optionalClaim(OpenId4VPSpec.TRANSACTION_DATA, r.transactionData?.toJackson())
             optionalClaim(OpenId4VPSpec.WALLET_NONCE, walletNonce)
@@ -148,8 +148,13 @@ class CreateJarNimbus : CreateJar {
         responseMode: ResponseMode,
     ): OIDCClientMetadata {
         return OIDCClientMetadata().apply {
-            if (responseMode is ResponseMode.DirectPostJwt) {
-                jwkSet = JWKSet(listOf(responseMode.ephemeralResponseEncryptionKey)).toPublicJWKSet()
+            val responseEncryptionKey = when (responseMode) {
+                is ResponseMode.DirectPostJwt -> responseMode.ephemeralResponseEncryptionKey
+                is ResponseMode.DcApiJwt -> responseMode.ephemeralResponseEncryptionKey
+                ResponseMode.DirectPost -> null
+            }
+            if (responseEncryptionKey != null) {
+                jwkSet = JWKSet(listOf(responseEncryptionKey)).toPublicJWKSet()
                 setCustomField(
                     OpenId4VPSpec.ENCRYPTED_RESPONSE_ENC_VALUES_SUPPORTED,
                     c.responseEncryptionOption.encryptionMethods.map { it.name }.toList(),

@@ -161,6 +161,46 @@ class InitTransactionTest {
             assertEquals(ResponseModeOption.DirectPost, requestObjectRetrieved.responseMode.option)
         }
 
+    @Test
+    fun `when dc api response mode misses expected origins validation error is raised`() = runTest {
+        val input = InitTransactionTO(
+            dcqlQuery(),
+            nonce = "nonce",
+            responseMode = ResponseModeTO.DcApiJwt,
+        )
+
+        val useCase: InitTransaction = TestContext.initTransaction(
+            verifierConfig,
+            EmbedOption.byReference { _ -> uri },
+        )
+
+        assertEquals(ValidationError.MissingExpectedOrigins.left(), useCase(input))
+    }
+
+    @Test
+    fun `when dc api response mode is provided expected origins are stored`() = runTest {
+        val input = InitTransactionTO(
+            dcqlQuery(),
+            nonce = "nonce",
+            responseMode = ResponseModeTO.DcApiJwt,
+            expectedOrigins = listOf("https://merchant.example"),
+            jarMode = EmbedModeTO.ByReference,
+        )
+
+        val useCase: InitTransaction = TestContext.initTransaction(
+            verifierConfig,
+            EmbedOption.byReference { _ -> uri },
+        )
+
+        assertIs<InitTransactionResponse.JwtSecuredAuthorizationRequestTO>(
+            useCase(input).getOrElse { fail("Unexpected $it") },
+        )
+        val presentation = assertIs<Presentation.Requested>(loadPresentationById(testTransactionId))
+        val responseMode = assertIs<ResponseMode.DcApiJwt>(presentation.responseMode)
+        assertEquals(ResponseModeOption.DcApiJwt, responseMode.option)
+        assertEquals(URL("https://merchant.example"), responseMode.expectedOrigins.head)
+    }
+
     /**
      * Verifies [InitTransactionTO.jarMode] takes precedence over [VerifierConfig.requestJarOption].
      */

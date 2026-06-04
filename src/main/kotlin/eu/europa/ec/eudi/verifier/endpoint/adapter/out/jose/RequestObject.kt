@@ -27,8 +27,9 @@ internal data class RequestObject(
     val nonce: String,
     val responseMode: String,
     val responseUri: URL?,
+    val expectedOrigins: List<String>? = null,
     val aud: List<String>,
-    val state: String,
+    val state: String?,
     val issuedAt: Instant,
     val expiresAt: Instant,
     val transactionData: List<String>? = null,
@@ -52,12 +53,20 @@ internal fun requestObjectFromDomain(
         responseType = responseType,
         aud = aud,
         nonce = presentation.nonce.value,
-        state = presentation.requestId.value,
         responseMode = when (presentation.responseMode) {
             ResponseMode.DirectPost -> OpenId4VPSpec.RESPONSE_MODE_DIRECT_POST
             is ResponseMode.DirectPostJwt -> OpenId4VPSpec.RESPONSE_MODE_DIRECT_POST_JWT
+            is ResponseMode.DcApiJwt -> OpenId4VPSpec.RESPONSE_MODE_DC_API_JWT
+        },
+        expectedOrigins = when (val responseMode = presentation.responseMode) {
+            is ResponseMode.DcApiJwt -> responseMode.expectedOrigins.map { it.toExternalForm().removeSuffix("/") }
+            else -> null
         },
         responseUri = verifierConfig.responseUriBuilder(presentation.requestId),
+        state = when (presentation.responseMode) {
+            is ResponseMode.DcApiJwt -> null
+            else -> presentation.requestId.value
+        },
         issuedAt = issuedAt,
         expiresAt = presentation.initiatedAt + verifierConfig.maxAge,
         transactionData = transactionData,

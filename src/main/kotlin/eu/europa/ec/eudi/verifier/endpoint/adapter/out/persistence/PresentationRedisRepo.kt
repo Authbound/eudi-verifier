@@ -44,6 +44,7 @@ import org.springframework.data.domain.Range
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.data.redis.core.script.DefaultRedisScript
 import java.io.ByteArrayInputStream
+import java.net.URL
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.Base64
@@ -394,6 +395,13 @@ class PresentationRedisRepo(
     ) : ResponseModeRecord
 
     @Serializable
+    @SerialName("dc_api_jwt")
+    private data class DcApiJwtRecord(
+        val jwkJson: String,
+        val expectedOrigins: List<String>,
+    ) : ResponseModeRecord
+
+    @Serializable
     private sealed interface GetWalletResponseMethodRecord {
     }
 
@@ -697,11 +705,19 @@ class PresentationRedisRepo(
     private fun ResponseMode.toRecord(): ResponseModeRecord = when (this) {
         ResponseMode.DirectPost -> DirectPostRecord
         is ResponseMode.DirectPostJwt -> DirectPostJwtRecord(jwkJson = ephemeralResponseEncryptionKey.toJSONString())
+        is ResponseMode.DcApiJwt -> DcApiJwtRecord(
+            jwkJson = ephemeralResponseEncryptionKey.toJSONString(),
+            expectedOrigins = expectedOrigins.map { it.toExternalForm() },
+        )
     }
 
     private fun ResponseModeRecord.toDomain(): ResponseMode = when (this) {
         is DirectPostRecord -> ResponseMode.DirectPost
         is DirectPostJwtRecord -> ResponseMode.DirectPostJwt(JWK.parse(jwkJson))
+        is DcApiJwtRecord -> ResponseMode.DcApiJwt(
+            JWK.parse(jwkJson),
+            expectedOrigins.map { URL(it) }.toNonEmptyListOrNull()!!,
+        )
     }
 
     private fun GetWalletResponseMethod.toRecord(): GetWalletResponseMethodRecord = when (this) {

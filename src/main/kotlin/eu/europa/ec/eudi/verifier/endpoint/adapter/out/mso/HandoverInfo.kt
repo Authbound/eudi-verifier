@@ -54,14 +54,24 @@ sealed interface HandoverInfo {
         operator fun invoke(
             presentation: Presentation.RequestObjectRetrieved,
             config: VerifierConfig,
-        ): HandoverInfo = OpenID4VPHandoverInfo(
-            clientId = config.verifierId,
-            nonce = presentation.nonce,
-            ephemeralEncryptionKey = when (val responseMode = presentation.responseMode) {
-                ResponseMode.DirectPost -> null
-                is ResponseMode.DirectPostJwt -> responseMode.ephemeralResponseEncryptionKey.toPublicJWK()
-            },
-            responseUri = config.responseUriBuilder(presentation.requestId),
-        )
+        ): HandoverInfo =
+            when (val responseMode = presentation.responseMode) {
+                ResponseMode.DirectPost,
+                is ResponseMode.DirectPostJwt -> OpenID4VPHandoverInfo(
+                    clientId = config.verifierId,
+                    nonce = presentation.nonce,
+                    ephemeralEncryptionKey = when (responseMode) {
+                        ResponseMode.DirectPost -> null
+                        is ResponseMode.DirectPostJwt -> responseMode.ephemeralResponseEncryptionKey.toPublicJWK()
+                        is ResponseMode.DcApiJwt -> error("unreachable")
+                    },
+                    responseUri = config.responseUriBuilder(presentation.requestId),
+                )
+                is ResponseMode.DcApiJwt -> OpenID4VPDCAPIHandoverInfo(
+                    origin = responseMode.expectedOrigins.head,
+                    nonce = presentation.nonce,
+                    ephemeralEncryptionKey = responseMode.ephemeralResponseEncryptionKey.toPublicJWK(),
+                )
+            }
     }
 }
