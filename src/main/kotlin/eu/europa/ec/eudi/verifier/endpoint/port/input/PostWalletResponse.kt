@@ -136,6 +136,7 @@ private suspend fun AuthorisationResponseTO.verifiablePresentations(
                 unvalidatedVerifiablePresentations.map {
                     validateVerifiablePresentation(
                         presentation,
+                        queryId,
                         it,
                         applicableTransactionData,
                     ).bind()

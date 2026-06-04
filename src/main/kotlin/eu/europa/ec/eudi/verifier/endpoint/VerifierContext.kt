@@ -65,6 +65,7 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.security.buildS2sJwtDecod
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.NoopStatusListTokenCache
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.StatusListTokenRedisCache
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.StatusListTokenValidator
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.trust.TrustAuthorityResolverLive
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.ParsePemEncodedX509CertificateChainWithNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.dnsSubjectAlternativeNames
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.x509.isSelfSigned
@@ -401,10 +402,13 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
         )
     }
     registerBean { ProcessSdJwtVc() }
+    registerBean { FetchLOTLCertificatesDSS() }
+    registerBean { TrustAuthorityResolverLive(bean()) }
 
     registerBean {
         ValidateSdJwtVcOrMsoMdocVerifiablePresentation(
             config = bean(),
+            trustAuthorityResolver = bean(),
             sdJwtVcValidatorFactory = { userProvided ->
                 val appDefault = bean<SdJwtVcValidator>()
                 userProvided?.let { sdJwtVcValidator { userProvided } } ?: appDefault
@@ -415,8 +419,6 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
             },
         )
     }
-
-    registerBean { FetchLOTLCertificatesDSS() }
 
     //
     // Type metadata policy
