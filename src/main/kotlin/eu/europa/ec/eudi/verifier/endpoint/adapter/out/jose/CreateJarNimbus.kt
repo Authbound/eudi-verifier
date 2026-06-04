@@ -138,6 +138,7 @@ class CreateJarNimbus : CreateJar {
             optionalClaim(OpenId4VPSpec.EXPECTED_ORIGINS, r.expectedOrigins)
             optionalClaim(OpenId4VPSpec.DCQL_QUERY, r.dcqlQuery?.toJackson())
             optionalClaim(OpenId4VPSpec.TRANSACTION_DATA, r.transactionData?.toJackson())
+            optionalClaim(OpenId4VPSpec.VERIFIER_ATTESTATIONS, r.verifierAttestations?.toJackson())
             optionalClaim(OpenId4VPSpec.WALLET_NONCE, walletNonce)
             build()
         }

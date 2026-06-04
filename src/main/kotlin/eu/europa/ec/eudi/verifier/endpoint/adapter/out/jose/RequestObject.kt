@@ -33,6 +33,7 @@ internal data class RequestObject(
     val issuedAt: Instant,
     val expiresAt: Instant,
     val transactionData: List<String>? = null,
+    val verifierAttestations: List<VerifierAttestation>? = null,
 )
 
 internal fun requestObjectFromDomain(
@@ -70,5 +71,6 @@ internal fun requestObjectFromDomain(
         issuedAt = issuedAt,
         expiresAt = presentation.initiatedAt + verifierConfig.maxAge,
         transactionData = transactionData,
+        verifierAttestations = presentation.verifierAttestations,
     )
 }

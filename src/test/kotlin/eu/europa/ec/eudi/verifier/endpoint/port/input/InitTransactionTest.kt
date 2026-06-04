@@ -223,6 +223,31 @@ class InitTransactionTest {
         assertNull(presentation.walletFacingQuery.credentials.value.first().trustedAuthorities)
     }
 
+    @Test
+    fun `when verifier attestations are provided they are stored with the presentation`() = runTest {
+        val verifierAttestation = VerifierAttestation(
+            format = VerifierAttestationFormat.Jwt,
+            data = "registration-certificate-jwt",
+        )
+        val input = InitTransactionTO(
+            dcqlQuery(),
+            nonce = "nonce",
+            verifierAttestations = listOf(verifierAttestation),
+            jarMode = EmbedModeTO.ByReference,
+        )
+
+        val useCase: InitTransaction = TestContext.initTransaction(
+            verifierConfig,
+            EmbedOption.byReference { _ -> uri },
+        )
+
+        assertIs<InitTransactionResponse.JwtSecuredAuthorizationRequestTO>(
+            useCase(input).getOrElse { fail("Unexpected $it") },
+        )
+        val presentation = assertIs<Presentation.Requested>(loadPresentationById(testTransactionId))
+        assertEquals(listOf(verifierAttestation), presentation.verifierAttestations)
+    }
+
     /**
      * Verifies [InitTransactionTO.jarMode] takes precedence over [VerifierConfig.requestJarOption].
      */

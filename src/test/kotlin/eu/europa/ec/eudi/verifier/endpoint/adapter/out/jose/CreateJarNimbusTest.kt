@@ -54,6 +54,8 @@ import eu.europa.ec.eudi.verifier.endpoint.domain.ResponseModeOption
 import eu.europa.ec.eudi.verifier.endpoint.domain.TransactionId
 import eu.europa.ec.eudi.verifier.endpoint.domain.TrustedAuthority
 import eu.europa.ec.eudi.verifier.endpoint.domain.UnresolvedAuthorizationRequestUri
+import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierAttestation
+import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierAttestationFormat
 import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierConfig
 import eu.europa.ec.eudi.verifier.endpoint.domain.walletFacing
 import eu.europa.ec.eudi.verifier.endpoint.port.input.InitTransactionTO
@@ -239,6 +241,24 @@ class CreateJarNimbusTest {
         assertNull(requestObject.dcqlQuery!!.credentials.value.first().trustedAuthorities)
     }
 
+    @Test
+    fun `request object includes verifier attestations`() {
+        val verifierAttestation = VerifierAttestation(
+            format = VerifierAttestationFormat.Jwt,
+            data = "registration-certificate-jwt",
+        )
+        val requested = requestedPresentation(verifierAttestations = listOf(verifierAttestation))
+
+        val requestObject = requestObjectFromDomain(verifierConfig(), TestContext.testClock, requested)
+        val signedJwt = createJar.sign(clientMetaData, requested.responseMode, requestObject, null)
+            .getOrThrow()
+
+        val attestations = assertIs<List<*>>(signedJwt.jwtClaimsSet.getClaim(OpenId4VPSpec.VERIFIER_ATTESTATIONS))
+        val attestation = assertIs<Map<*, *>>(attestations.single())
+        assertEquals("jwt", attestation["format"])
+        assertEquals("registration-certificate-jwt", attestation["data"])
+    }
+
     private fun requestObject(verifierId: VerifierId): RequestObject {
         val query = Json.decodeFromString<InitTransactionTO>(TestUtils.loadResource("fixtures/eudi/02-dcql.json")).dcqlQuery
         return RequestObject(
@@ -256,7 +276,10 @@ class CreateJarNimbusTest {
         )
     }
 
-    private fun requestedPresentation(responseMode: ResponseMode = ResponseMode.DirectPost): Presentation.Requested {
+    private fun requestedPresentation(
+        responseMode: ResponseMode = ResponseMode.DirectPost,
+        verifierAttestations: List<VerifierAttestation>? = null,
+    ): Presentation.Requested {
         val query = Json.decodeFromString<InitTransactionTO>(TestUtils.loadResource("fixtures/eudi/02-dcql.json")).dcqlQuery!!
         return Presentation.Requested(
             id = TransactionId("tx-${UUID.randomUUID()}"),
@@ -270,6 +293,7 @@ class CreateJarNimbusTest {
             getWalletResponseMethod = GetWalletResponseMethod.Poll,
             issuerChain = null,
             profile = Profile.OpenId4VP,
+            verifierAttestations = verifierAttestations,
         )
     }
 

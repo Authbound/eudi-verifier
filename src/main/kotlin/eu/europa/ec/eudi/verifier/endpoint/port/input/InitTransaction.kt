@@ -125,6 +125,7 @@ data class InitTransactionTO(
     @SerialName(OpenId4VPSpec.TRANSACTION_DATA) val transactionData: List<JsonObject>? = null,
     @SerialName(OpenId4VPSpec.EXPECTED_ORIGINS) val expectedOrigins: List<String>? = null,
     @SerialName(OpenId4VPSpec.STRIP_TRUSTED_AUTHORITIES_FOR_WALLET) val stripTrustedAuthoritiesForWallet: Boolean? = null,
+    @SerialName(OpenId4VPSpec.VERIFIER_ATTESTATIONS) val verifierAttestations: List<VerifierAttestation>? = null,
     @SerialName("issuer_chain") val issuerChain: String? = null,
     @SerialName("authorization_request_scheme") val authorizationRequestScheme: String? = null,
     @SerialName("authorization_request_uri") val authorizationRequestUri: String? = null,
@@ -147,6 +148,7 @@ sealed interface ValidationError {
     data object InvalidIssuerChain : ValidationError
     data object MissingExpectedOrigins : ValidationError
     data object InvalidExpectedOrigins : ValidationError
+    data object InvalidVerifierAttestations : ValidationError
     data object ContainsBothAuthorizationRequestUriAndAuthorizationRequestScheme : ValidationError
     data object InvalidAuthorizationRequestUri : ValidationError
     data object InvalidAuthorizationRequestScheme : ValidationError
@@ -286,6 +288,7 @@ class InitTransactionLive(
 
         val getWalletResponseMethod = getWalletResponseMethod(initTransactionTO).bind()
         val issuerChain = issuerChain(initTransactionTO).bind()
+        val verifierAttestations = verifierAttestations(initTransactionTO).bind()
 
         val profile = initTransactionTO.profileOrDefault.toProfile()
 
@@ -303,6 +306,7 @@ class InitTransactionLive(
             requestUriMethod = requestUriMethod(initTransactionTO),
             issuerChain = issuerChain,
             profile = profile,
+            verifierAttestations = verifierAttestations,
         )
 
         val jarMode = jarMode(initTransactionTO)
@@ -472,6 +476,13 @@ class InitTransactionLive(
         Either.catch {
             initTransaction.issuerChain?.let { parsePemEncodedX509CertificateChain(it).getOrThrow() }
         }.mapLeft { ValidationError.InvalidIssuerChain }
+
+    private fun verifierAttestations(initTransaction: InitTransactionTO): Either<ValidationError, List<VerifierAttestation>?> =
+        Either.catch {
+            initTransaction.verifierAttestations?.also { attestations ->
+                require(attestations.isNotEmpty()) { "Verifier attestations cannot be empty" }
+            }
+        }.mapLeft { ValidationError.InvalidVerifierAttestations }
 
     /**
      * Gets the [UnresolvedAuthorizationRequestUri] for the provided [InitTransactionTO].

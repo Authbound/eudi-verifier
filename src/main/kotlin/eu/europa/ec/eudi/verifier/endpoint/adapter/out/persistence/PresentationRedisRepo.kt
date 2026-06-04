@@ -339,6 +339,7 @@ class PresentationRedisRepo(
         val getWalletResponseMethod: GetWalletResponseMethodRecord,
         val issuerChain: List<String>?,
         val profile: ProfileRecord,
+        val verifierAttestations: List<VerifierAttestation>? = null,
     ) : PresentationRecord
 
     @Serializable
@@ -356,6 +357,7 @@ class PresentationRedisRepo(
         val getWalletResponseMethod: GetWalletResponseMethodRecord,
         val issuerChain: List<String>?,
         val profile: ProfileRecord,
+        val verifierAttestations: List<VerifierAttestation>? = null,
     ) : PresentationRecord
 
     @Serializable
@@ -624,6 +626,7 @@ class PresentationRedisRepo(
             getWalletResponseMethod = getWalletResponseMethod.toRecord(),
             issuerChain = issuerChain?.let { encodeIssuerChain(it) },
             profile = profile.toRecord(),
+            verifierAttestations = verifierAttestations,
         )
         is Presentation.RequestObjectRetrieved -> RequestObjectRetrievedRecord(
             id = id.value,
@@ -638,6 +641,7 @@ class PresentationRedisRepo(
             getWalletResponseMethod = getWalletResponseMethod.toRecord(),
             issuerChain = issuerChain?.let { encodeIssuerChain(it) },
             profile = profile.toRecord(),
+            verifierAttestations = verifierAttestations,
         )
         is Presentation.Submitted -> SubmittedRecord(
             id = id.value,
@@ -673,6 +677,7 @@ class PresentationRedisRepo(
             getWalletResponseMethod = getWalletResponseMethod.toDomain(),
             issuerChain = issuerChain?.let { decodeIssuerChain(it) },
             profile = profile.toDomain(),
+            verifierAttestations = verifierAttestations,
         )
         is RequestObjectRetrievedRecord -> Presentation.RequestObjectRetrieved.restore(
             id = TransactionId(id),
@@ -687,6 +692,7 @@ class PresentationRedisRepo(
             getWalletResponseMethod = getWalletResponseMethod.toDomain(),
             issuerChain = issuerChain?.let { decodeIssuerChain(it) },
             profile = profile.toDomain(),
+            verifierAttestations = verifierAttestations,
         )
         is SubmittedRecord -> Presentation.Submitted.restore(
             id = TransactionId(id),

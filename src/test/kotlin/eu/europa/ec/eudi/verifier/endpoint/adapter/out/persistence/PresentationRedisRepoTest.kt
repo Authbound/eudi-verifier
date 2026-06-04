@@ -70,7 +70,14 @@ class PresentationRedisRepoTest {
 
     @Test
     fun `stores and loads presentation by id and request id`() = runTest {
-        val presentation = requestedPresentation()
+        val presentation = requestedPresentation(
+            verifierAttestations = listOf(
+                VerifierAttestation(
+                    format = VerifierAttestationFormat.Jwt,
+                    data = "registration-certificate-jwt",
+                ),
+            ),
+        )
         assertEquals(StorePresentationResult.Stored, repo.storePresentation(presentation))
 
         val loaded = repo.loadPresentationById(presentation.id)
@@ -86,6 +93,7 @@ class PresentationRedisRepoTest {
             originalResponseMode.ephemeralResponseEncryptionKey.toJSONString(),
             loadedResponseMode.ephemeralResponseEncryptionKey.toJSONString(),
         )
+        assertEquals(presentation.verifierAttestations, loaded.verifierAttestations)
 
         val loadedByRequest = repo.loadPresentationByRequestId(presentation.requestId)
         assertNotNull(loadedByRequest)
@@ -202,7 +210,9 @@ class PresentationRedisRepoTest {
         assertEquals(listOf(retrieved.id), loaded.map { it.id })
     }
 
-    private fun requestedPresentation(): Presentation.Requested {
+    private fun requestedPresentation(
+        verifierAttestations: List<VerifierAttestation>? = null,
+    ): Presentation.Requested {
         val dcql = VerifierApiClient.loadInitTransactionTO("fixtures/eudi/00-dcql.json").dcqlQuery!!
         val jwk = ECKeyGenerator(Curve.P_256)
             .keyUse(KeyUse.ENCRYPTION)
@@ -219,6 +229,7 @@ class PresentationRedisRepoTest {
             getWalletResponseMethod = GetWalletResponseMethod.Poll,
             issuerChain = null,
             profile = Profile.OpenId4VP,
+            verifierAttestations = verifierAttestations,
         )
     }
 

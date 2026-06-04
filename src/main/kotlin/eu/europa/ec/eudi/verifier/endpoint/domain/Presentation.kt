@@ -142,6 +142,7 @@ sealed interface Presentation {
         val getWalletResponseMethod: GetWalletResponseMethod,
         val issuerChain: NonEmptyList<X509Certificate>?,
         val profile: Profile,
+        val verifierAttestations: List<VerifierAttestation>? = null,
     ) : Presentation
 
     /**
@@ -163,6 +164,7 @@ sealed interface Presentation {
         val getWalletResponseMethod: GetWalletResponseMethod,
         val issuerChain: NonEmptyList<X509Certificate>?,
         val profile: Profile,
+        val verifierAttestations: List<VerifierAttestation>? = null,
     ) : Presentation {
         init {
             require(initiatedAt <= requestObjectRetrievedAt)
@@ -184,6 +186,7 @@ sealed interface Presentation {
                         requested.getWalletResponseMethod,
                         requested.issuerChain,
                         requested.profile,
+                        requested.verifierAttestations,
                     )
                 }
 
@@ -200,6 +203,7 @@ sealed interface Presentation {
                 getWalletResponseMethod: GetWalletResponseMethod,
                 issuerChain: NonEmptyList<X509Certificate>?,
                 profile: Profile,
+                verifierAttestations: List<VerifierAttestation>? = null,
             ): RequestObjectRetrieved =
                 RequestObjectRetrieved(
                     id,
@@ -214,6 +218,7 @@ sealed interface Presentation {
                     getWalletResponseMethod,
                     issuerChain,
                     profile,
+                    verifierAttestations,
                 )
         }
     }

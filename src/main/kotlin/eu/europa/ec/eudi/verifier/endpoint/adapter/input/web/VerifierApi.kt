@@ -160,6 +160,8 @@ internal class VerifierApi(
                     "MissingExpectedOrigins"
                 ValidationError.InvalidExpectedOrigins ->
                     "InvalidExpectedOrigins"
+                ValidationError.InvalidVerifierAttestations ->
+                    "InvalidVerifierAttestations"
                 ValidationError.ContainsBothAuthorizationRequestUriAndAuthorizationRequestScheme ->
                     "ContainsBothAuthorizationRequestUriAndAuthorizationRequestScheme"
                 ValidationError.InvalidAuthorizationRequestUri ->

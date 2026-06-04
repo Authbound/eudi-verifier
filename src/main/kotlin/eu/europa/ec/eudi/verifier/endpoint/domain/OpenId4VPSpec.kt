@@ -47,6 +47,7 @@ object OpenId4VPSpec {
 
     const val CLIENT_METADATA: String = "client_metadata"
     const val EXPECTED_ORIGINS: String = "expected_origins"
+    const val VERIFIER_ATTESTATIONS: String = "verifier_attestations"
 
     const val VP_FORMATS: String = "vp_formats"
     const val VP_FORMATS_SUPPORTED: String = "vp_formats_supported"
