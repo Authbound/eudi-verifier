@@ -49,7 +49,7 @@ internal fun requestObjectFromDomain(
     return RequestObject(
         verifierId = verifierConfig.verifierId,
         scope = scope,
-        dcqlQuery = presentation.query,
+        dcqlQuery = presentation.walletFacingQuery,
         responseType = responseType,
         aud = aud,
         nonce = presentation.nonce.value,

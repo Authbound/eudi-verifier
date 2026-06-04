@@ -201,6 +201,28 @@ class InitTransactionTest {
         assertEquals(URL("https://merchant.example"), responseMode.expectedOrigins.head)
     }
 
+    @Test
+    fun `when trusted authorities are stripped for wallet original query is preserved`() = runTest {
+        val input = InitTransactionTO(
+            dcqlWithTrustedAuthorities(),
+            nonce = "nonce",
+            stripTrustedAuthoritiesForWallet = true,
+            jarMode = EmbedModeTO.ByReference,
+        )
+
+        val useCase: InitTransaction = TestContext.initTransaction(
+            verifierConfig,
+            EmbedOption.byReference { _ -> uri },
+        )
+
+        assertIs<InitTransactionResponse.JwtSecuredAuthorizationRequestTO>(
+            useCase(input).getOrElse { fail("Unexpected $it") },
+        )
+        val presentation = assertIs<Presentation.Requested>(loadPresentationById(testTransactionId))
+        assertNotNull(presentation.query.credentials.value.first().trustedAuthorities)
+        assertNull(presentation.walletFacingQuery.credentials.value.first().trustedAuthorities)
+    }
+
     /**
      * Verifies [InitTransactionTO.jarMode] takes precedence over [VerifierConfig.requestJarOption].
      */
@@ -421,4 +443,23 @@ class InitTransactionTest {
     private suspend fun loadPresentationById(id: TransactionId) = TestContext.loadPresentationById(id)
 
     private fun dcqlQuery() = VerifierApiClient.loadInitTransactionTO("fixtures/eudi/00-dcql.json").dcqlQuery!!
+
+    private fun dcqlWithTrustedAuthorities(): DCQL {
+        val dcql = dcqlQuery()
+        return dcql.copy(
+            credentials = Credentials(
+                dcql.credentials.value.mapIndexed { index, credential ->
+                    if (index == 0) {
+                        credential.copy(
+                            trustedAuthorities = listOf(
+                                TrustedAuthority.trustedLists(listOf(URL("https://trust.example/lote.jwt"))),
+                            ),
+                        )
+                    } else {
+                        credential
+                    }
+                },
+            ),
+        )
+    }
 }

@@ -81,6 +81,7 @@ object OpenId4VPSpec {
     const val DCQL_TRUSTED_AUTHORITY_TYPE_AKI: String = "aki"
     const val DCQL_TRUSTED_AUTHORITY_TYPE_ETSI_TL: String = "etsi_tl"
     const val DCQL_TRUSTED_AUTHORITY_TYPE_OPENID_FEDERATION: String = "openid_federation"
+    const val STRIP_TRUSTED_AUTHORITIES_FOR_WALLET: String = "strip_trusted_authorities_for_wallet"
 
     const val WALLET_METADATA: String = "wallet_metadata"
     const val WALLET_NONCE: String = "wallet_nonce"

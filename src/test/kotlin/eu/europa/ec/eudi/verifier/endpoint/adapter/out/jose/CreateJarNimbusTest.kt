@@ -39,6 +39,7 @@ import eu.europa.ec.eudi.verifier.endpoint.domain.SigningConfig
 import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierId
 import eu.europa.ec.eudi.verifier.endpoint.domain.DCQL
 import eu.europa.ec.eudi.verifier.endpoint.domain.Clock
+import eu.europa.ec.eudi.verifier.endpoint.domain.Credentials
 import eu.europa.ec.eudi.verifier.endpoint.domain.EmbedOption
 import eu.europa.ec.eudi.verifier.endpoint.domain.GetWalletResponseMethod
 import eu.europa.ec.eudi.verifier.endpoint.domain.HashAlgorithm
@@ -51,8 +52,10 @@ import eu.europa.ec.eudi.verifier.endpoint.domain.RequestUriMethod
 import eu.europa.ec.eudi.verifier.endpoint.domain.ResponseMode
 import eu.europa.ec.eudi.verifier.endpoint.domain.ResponseModeOption
 import eu.europa.ec.eudi.verifier.endpoint.domain.TransactionId
+import eu.europa.ec.eudi.verifier.endpoint.domain.TrustedAuthority
 import eu.europa.ec.eudi.verifier.endpoint.domain.UnresolvedAuthorizationRequestUri
 import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierConfig
+import eu.europa.ec.eudi.verifier.endpoint.domain.walletFacing
 import eu.europa.ec.eudi.verifier.endpoint.port.input.InitTransactionTO
 import eu.europa.ec.eudi.verifier.endpoint.domain.toJavaDate
 import kotlinx.datetime.TimeZone
@@ -208,6 +211,34 @@ class CreateJarNimbusTest {
         assertEquals(JWKSet(responseEncryptionKey).toPublicJWKSet(), OIDCClientMetadata.parse(JSONObject(claimSet.getJSONObjectClaim("client_metadata"))).jwkSet)
     }
 
+    @Test
+    fun `request object uses wallet-facing dcql`() {
+        val original = dcqlWithTrustedAuthorities()
+        val walletFacing = original.walletFacing(stripTrustedAuthorities = true)
+        val requested = requestedPresentation().let {
+            Presentation.Requested(
+                id = it.id,
+                initiatedAt = it.initiatedAt,
+                query = original,
+                walletFacingQuery = walletFacing,
+                transactionData = it.transactionData,
+                requestId = it.requestId,
+                requestUriMethod = it.requestUriMethod,
+                nonce = it.nonce,
+                responseMode = it.responseMode,
+                getWalletResponseMethod = it.getWalletResponseMethod,
+                issuerChain = it.issuerChain,
+                profile = it.profile,
+            )
+        }
+
+        val requestObject = requestObjectFromDomain(verifierConfig(), TestContext.testClock, requested)
+
+        assertEquals(walletFacing, requestObject.dcqlQuery)
+        assertNotNull(original.credentials.value.first().trustedAuthorities)
+        assertNull(requestObject.dcqlQuery!!.credentials.value.first().trustedAuthorities)
+    }
+
     private fun requestObject(verifierId: VerifierId): RequestObject {
         val query = Json.decodeFromString<InitTransactionTO>(TestUtils.loadResource("fixtures/eudi/02-dcql.json")).dcqlQuery
         return RequestObject(
@@ -239,6 +270,25 @@ class CreateJarNimbusTest {
             getWalletResponseMethod = GetWalletResponseMethod.Poll,
             issuerChain = null,
             profile = Profile.OpenId4VP,
+        )
+    }
+
+    private fun dcqlWithTrustedAuthorities(): DCQL {
+        val dcql = Json.decodeFromString<InitTransactionTO>(TestUtils.loadResource("fixtures/eudi/02-dcql.json")).dcqlQuery!!
+        return dcql.copy(
+            credentials = Credentials(
+                dcql.credentials.value.mapIndexed { index, credential ->
+                    if (index == 0) {
+                        credential.copy(
+                            trustedAuthorities = listOf(
+                                TrustedAuthority.trustedLists(listOf(URL("https://trust.example/lote.jwt"))),
+                            ),
+                        )
+                    } else {
+                        credential
+                    }
+                },
+            ),
         )
     }
 
