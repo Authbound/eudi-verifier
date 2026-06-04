@@ -1,6 +1,6 @@
 # EUDI Verifier — Coolify Production Stack
 # Based on infra/compose/non-js.yaml, adapted for Coolify deployment.
-# Includes Redis (required for verifier session persistence).
+# Includes a private Redis service required for verifier session persistence.
 #
 # Required env vars (set via Coolify UI):
 #   DOMAIN                - Base domain (e.g. authbound.io)
@@ -11,11 +11,11 @@
 #   EUDI_S2S_ISSUER       - Expected JWT issuer (gateway URL)
 
 services:
-  redis:
+  verifier-redis:
     image: redis:7-alpine
-    container_name: eudi-redis
     command: >
       redis-server
+      --save ""
       --maxmemory 128mb
       --maxmemory-policy allkeys-lru
       --requirepass ${REDIS_PASSWORD}
@@ -29,8 +29,6 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
-    networks:
-      - coolify
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -50,13 +48,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: eudi-verifier
     restart: unless-stopped
     depends_on:
-      redis:
+      verifier-redis:
         condition: service_healthy
-    networks:
-      - coolify
     environment:
       SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-prod}"
 
@@ -70,7 +65,7 @@ services:
       VERIFIER_PRESENTATIONS_TIMEOUTCHECKINTERVAL: "${VERIFIER_PRESENTATIONS_TIMEOUTCHECKINTERVAL:-PT60S}"
 
       # --- Redis (session persistence) ---
-      SPRING_DATA_REDIS_URL: "redis://:${REDIS_PASSWORD}@redis:6379"
+      SPRING_DATA_REDIS_URL: "redis://:${REDIS_PASSWORD}@verifier-redis:6379"
       SPRING_DATA_REDIS_SSL_ENABLED: "false"
 
       # --- Backend callback (verifier pushes wallet responses to backend) ---
@@ -122,7 +117,3 @@ services:
           memory: 256M
 volumes:
   redis_data:
-
-networks:
-  coolify:
-    external: true
