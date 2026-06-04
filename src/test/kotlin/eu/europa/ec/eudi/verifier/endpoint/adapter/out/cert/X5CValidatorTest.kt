@@ -15,16 +15,21 @@
  */
 package eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert
 
+import arrow.core.Either
 import arrow.core.Nel
 import arrow.core.nonEmptyListOf
+import org.bouncycastle.asn1.ASN1OctetString
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.asn1.x500.X500NameBuilder
 import org.bouncycastle.asn1.x500.style.BCStyle
+import org.bouncycastle.asn1.x509.AuthorityKeyIdentifier
+import org.bouncycastle.asn1.x509.Extension
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.assertDoesNotThrow
 import org.junit.jupiter.api.assertThrows
 import java.security.cert.CertPathValidatorException
 import java.security.cert.X509Certificate
+import java.util.Base64
 import kotlin.test.Test
 
 data class TrustedCA(val trustCert: X509Certificate, val caCert: X509Certificate)
@@ -139,10 +144,76 @@ class X5CValidatorTest {
         val trust = nonEmptyListOf(trustedCA.caCert)
         assertDoesNotThrow { test(chain, trust) }
     }
+
+    @Test
+    fun `authority key identifier policy succeeds when chain contains matching AKI`() {
+        val chain = nonEmptyListOf(eeCertificate, trustedCA.caCert)
+        val expectedAki = eeCertificate.authorityKeyIdentifierBase64Url()
+        val validator = X5CValidator(X5CShouldBe.AuthorityKeyIdentifier(nonEmptyListOf(expectedAki)))
+
+        assertDoesNotThrow { validator.trustedOrThrow(chain) }
+    }
+
+    @Test
+    fun `authority key identifier policy fails when no chain certificate matches`() {
+        val chain = nonEmptyListOf(eeCertificate, trustedCA.caCert)
+        val validator = X5CValidator(
+            X5CShouldBe.AuthorityKeyIdentifier(nonEmptyListOf("unmatched-key-identifier")),
+        )
+
+        assertThrows<CertPathValidatorException> { validator.trustedOrThrow(chain) }
+    }
+
+    @Test
+    fun `openid federation policy succeeds when leaf entity hints configured trust anchor`() {
+        val chain = nonEmptyListOf(eeCertificate, trustedCA.caCert)
+        val validator = X5CValidator(
+            X5CShouldBe.OpenIdFederation(
+                trustAnchors = nonEmptyListOf("https://trust-anchor.example"),
+                fetchEntityConfiguration = FetchOpenIdFederationEntityConfiguration { entityId ->
+                    Either.Right(
+                        OpenIdFederationEntityConfiguration(
+                            sub = entityId,
+                            authorityHints = listOf("https://trust-anchor.example"),
+                        ),
+                    )
+                },
+            ),
+        )
+
+        assertDoesNotThrow { validator.trustedOrThrow(chain) }
+    }
+
+    @Test
+    fun `openid federation policy fails when leaf entity does not hint configured trust anchor`() {
+        val chain = nonEmptyListOf(eeCertificate, trustedCA.caCert)
+        val validator = X5CValidator(
+            X5CShouldBe.OpenIdFederation(
+                trustAnchors = nonEmptyListOf("https://trust-anchor.example"),
+                fetchEntityConfiguration = FetchOpenIdFederationEntityConfiguration { entityId ->
+                    Either.Right(
+                        OpenIdFederationEntityConfiguration(
+                            sub = entityId,
+                            authorityHints = listOf("https://other-anchor.example"),
+                        ),
+                    )
+                },
+            ),
+        )
+
+        assertThrows<CertPathValidatorException> { validator.trustedOrThrow(chain) }
+    }
 }
 
 private fun test(chain: Nel<X509Certificate>, trust: Nel<X509Certificate>) {
     val x5CShouldBe = X5CShouldBe.Trusted(trust)
     val validator = X5CValidator(x5CShouldBe)
     validator.trustedOrThrow(chain)
+}
+
+private fun X509Certificate.authorityKeyIdentifierBase64Url(): String {
+    val extensionValue = checkNotNull(getExtensionValue(Extension.authorityKeyIdentifier.id))
+    val octets = ASN1OctetString.getInstance(extensionValue).octets
+    val authorityKeyIdentifier = AuthorityKeyIdentifier.getInstance(octets)
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(authorityKeyIdentifier.keyIdentifier)
 }

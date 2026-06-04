@@ -58,8 +58,8 @@ private val log = LoggerFactory.getLogger(ValidateSdJwtVcOrMsoMdocVerifiablePres
 internal class ValidateSdJwtVcOrMsoMdocVerifiablePresentation(
     private val config: VerifierConfig,
     private val trustAuthorityResolver: TrustAuthorityResolver,
-    private val sdJwtVcValidatorFactory: (X5CShouldBe.Trusted?) -> SdJwtVcValidator,
-    private val deviceResponseValidatorFactory: (X5CShouldBe.Trusted?) -> DeviceResponseValidator,
+    private val sdJwtVcValidatorFactory: (X5CShouldBe?) -> SdJwtVcValidator,
+    private val deviceResponseValidatorFactory: (X5CShouldBe?) -> DeviceResponseValidator,
 ) : ValidateVerifiablePresentation {
     private val vpFormatsSupported = config.clientMetaData.vpFormatsSupported
 
@@ -103,7 +103,7 @@ internal class ValidateSdJwtVcOrMsoMdocVerifiablePresentation(
     private suspend fun Raise<WalletResponseValidationError>.issuerTrust(
         presentation: Presentation.RequestObjectRetrieved,
         queryId: QueryId,
-    ): X5CShouldBe.Trusted? {
+    ): X5CShouldBe? {
         val explicitTrust = trustAuthorityResolver
             .resolve(queryId, PresentationTrustPolicy.from(presentation.query))
             .mapLeft { error -> error.toWalletResponseValidationError(queryId) }

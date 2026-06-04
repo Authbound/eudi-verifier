@@ -18,6 +18,8 @@ package eu.europa.ec.eudi.verifier.endpoint.adapter.out.trust
 import arrow.core.Either
 import eu.europa.ec.eudi.verifier.endpoint.TestContext
 import eu.europa.ec.eudi.verifier.endpoint.adapter.input.web.VerifierApiClient
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.FetchOpenIdFederationEntityConfiguration
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.OpenIdFederationEntityConfiguration
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.domain.*
 import eu.europa.ec.eudi.verifier.endpoint.port.out.lotl.FetchLOTLCertificates
@@ -53,13 +55,34 @@ class TrustAuthorityResolverTest {
     }
 
     @Test
-    fun `openid federation trusted authority fails explicitly until federation resolver is wired`() = runTest {
-        val resolver = TrustAuthorityResolverLive(FetchLOTLCertificates { Either.Right(TestContext.signingCertificateChain) })
+    fun `aki trusted authority resolves authority key identifier policy`() = runTest {
+        val resolver = TrustAuthorityResolverLive(
+            FetchLOTLCertificates { Either.Right(TestContext.signingCertificateChain) },
+        )
+        val policy = PresentationTrustPolicy.from(dcqlWithAuthorityKeyIdentifier())
+
+        val trust = assertIs<X5CShouldBe.AuthorityKeyIdentifier>(
+            resolver.resolve(QueryId("wa_driver_license"), policy).getOrNull(),
+        )
+
+        assertEquals(listOf("s9tIpPmhxdiuNkHMEWNpYim8S8Y"), trust.keyIdentifiers)
+    }
+
+    @Test
+    fun `openid federation trusted authority resolves federation trust policy`() = runTest {
+        val resolver = TrustAuthorityResolverLive(
+            FetchLOTLCertificates { Either.Right(TestContext.signingCertificateChain) },
+            FetchOpenIdFederationEntityConfiguration { entityId ->
+                Either.Right(OpenIdFederationEntityConfiguration(sub = entityId, authorityHints = emptyList()))
+            },
+        )
         val policy = PresentationTrustPolicy.from(dcqlWithOpenIdFederationAuthority())
 
-        val error = resolver.resolve(QueryId("wa_driver_license"), policy).leftOrNull()
+        val trust = assertIs<X5CShouldBe.OpenIdFederation>(
+            resolver.resolve(QueryId("wa_driver_license"), policy).getOrNull(),
+        )
 
-        assertIs<TrustAuthorityResolutionError.UnsupportedType>(error)
+        assertEquals(listOf("https://trust-anchor.example"), trust.trustAnchors)
     }
 
     private fun dcqlWithTrustedAuthorities(): DCQL {
@@ -71,6 +94,25 @@ class TrustAuthorityResolverTest {
                         credential.copy(
                             trustedAuthorities = listOf(
                                 TrustedAuthority.trustedLists(listOf(URL("https://trust.example/lote.jwt"))),
+                            ),
+                        )
+                    } else {
+                        credential
+                    }
+                },
+            ),
+        )
+    }
+
+    private fun dcqlWithAuthorityKeyIdentifier(): DCQL {
+        val dcql = VerifierApiClient.loadInitTransactionTO("fixtures/eudi/00-dcql.json").dcqlQuery!!
+        return dcql.copy(
+            credentials = Credentials(
+                dcql.credentials.value.mapIndexed { index, credential ->
+                    if (index == 0) {
+                        credential.copy(
+                            trustedAuthorities = listOf(
+                                TrustedAuthority.authorityKeyIdentifiers(listOf("s9tIpPmhxdiuNkHMEWNpYim8S8Y")),
                             ),
                         )
                     } else {
