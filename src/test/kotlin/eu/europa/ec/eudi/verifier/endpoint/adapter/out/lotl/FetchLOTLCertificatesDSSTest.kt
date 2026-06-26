@@ -23,10 +23,40 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import java.net.URI
+import java.net.UnknownHostException
 import java.security.KeyStore
 
 class FetchLOTLCertificatesDSSTest {
+
+    @Test
+    fun `trusted list loader refuses local fetch targets`() {
+        val loader = SafeTrustedListDataLoader()
+
+        assertThrows<UnknownHostException> {
+            loader.get("https://localhost/lotl.xml")
+        }
+    }
+
+    @Test
+    fun `trusted list loader disables redirects`() {
+        assertFalse(SafeTrustedListDataLoader().isRedirectsEnabled)
+    }
+
+    @Test
+    fun `trusted list dns resolver refuses local addresses`() {
+        assertThrows<UnknownHostException> {
+            PublicOnlyDnsResolver.resolve("localhost")
+        }
+    }
+
+    @Test
+    fun `trusted list dns resolver refuses private address literals`() {
+        assertThrows<UnknownHostException> {
+            PublicOnlyDnsResolver.resolve("100.64.0.1")
+        }
+    }
 
     @Test
     fun `trusted list service predicate accepts only configured eudi credential provider types`() {

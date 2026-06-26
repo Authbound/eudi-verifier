@@ -85,11 +85,9 @@ class TrustAuthorityResolverTest {
         )
         val policy = PresentationTrustPolicy.from(dcqlWithTrustedAuthorities())
 
-        val error = assertIs<TrustAuthorityResolutionError.TrustedListFetchFailed>(
+        assertIs<TrustAuthorityResolutionError.TrustedListFetchFailed>(
             resolver.resolve(QueryId("wa_driver_license"), policy).leftOrNull(),
         )
-
-        assertEquals("network down", error.message)
     }
 
     @Test
@@ -101,11 +99,9 @@ class TrustAuthorityResolverTest {
             dcqlWithTrustedAuthorities("http://trust.example/lote.jwt"),
         )
 
-        val error = assertIs<TrustAuthorityResolutionError.TrustedListFetchFailed>(
+        assertIs<TrustAuthorityResolutionError.TrustedListFetchFailed>(
             resolver.resolve(QueryId("wa_driver_license"), policy).leftOrNull(),
         )
-
-        assertTrue(error.message.orEmpty().contains("https"))
     }
 
     @Test
@@ -117,11 +113,9 @@ class TrustAuthorityResolverTest {
             dcqlWithTrustedAuthorities("https://localhost/lote.jwt"),
         )
 
-        val error = assertIs<TrustAuthorityResolutionError.TrustedListFetchFailed>(
+        assertIs<TrustAuthorityResolutionError.TrustedListFetchFailed>(
             resolver.resolve(QueryId("wa_driver_license"), policy).leftOrNull(),
         )
-
-        assertTrue(error.message.orEmpty().contains("local address"))
     }
 
     @Test

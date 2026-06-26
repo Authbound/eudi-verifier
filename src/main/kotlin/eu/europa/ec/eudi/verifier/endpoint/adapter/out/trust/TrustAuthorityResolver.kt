@@ -34,7 +34,7 @@ import java.net.URL
 sealed interface TrustAuthorityResolutionError {
     data class UnsupportedType(val type: TrustedAuthorityType) : TrustAuthorityResolutionError
     data object NoTrustedCertificates : TrustAuthorityResolutionError
-    data class TrustedListFetchFailed(val message: String?) : TrustAuthorityResolutionError
+    data object TrustedListFetchFailed : TrustAuthorityResolutionError
 }
 
 fun interface TrustAuthorityResolver {
@@ -75,11 +75,7 @@ class TrustAuthorityResolverLive(
                             keystoreConfig = null,
                             serviceTypeFilters = policy.serviceTypeFiltersFor(queryId),
                         ),
-                    ).mapLeft { error ->
-                        TrustAuthorityResolutionError.TrustedListFetchFailed(
-                            error.message,
-                        )
-                    }.bind()
+                    ).mapLeft { TrustAuthorityResolutionError.TrustedListFetchFailed }.bind()
                 }
             }
 
@@ -104,8 +100,8 @@ private fun trustedListLocation(value: String): Either<TrustAuthorityResolutionE
             "trusted list location must not resolve to a local address"
         }
         uri.toURL()
-    }.mapLeft { error ->
-        TrustAuthorityResolutionError.TrustedListFetchFailed(error.message)
+    }.mapLeft {
+        TrustAuthorityResolutionError.TrustedListFetchFailed
     }
 
 private fun List<X5CShouldBe>.toTrustPolicy(): X5CShouldBe? =
