@@ -40,6 +40,8 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.SdJwtVcValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.description
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.status
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.StatusCheckException
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.trust.TrustAuthorityResolutionError
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.trust.TrustAuthorityResolver
 import eu.europa.ec.eudi.verifier.endpoint.domain.*
 import eu.europa.ec.eudi.verifier.endpoint.port.input.WalletResponseValidationError
 import eu.europa.ec.eudi.verifier.endpoint.port.out.presentation.ValidateVerifiablePresentation
@@ -55,17 +57,19 @@ private val log = LoggerFactory.getLogger(ValidateSdJwtVcOrMsoMdocVerifiablePres
 
 internal class ValidateSdJwtVcOrMsoMdocVerifiablePresentation(
     private val config: VerifierConfig,
-    private val sdJwtVcValidatorFactory: (X5CShouldBe.Trusted?) -> SdJwtVcValidator,
-    private val deviceResponseValidatorFactory: (X5CShouldBe.Trusted?) -> DeviceResponseValidator,
+    private val trustAuthorityResolver: TrustAuthorityResolver,
+    private val sdJwtVcValidatorFactory: (X5CShouldBe?) -> SdJwtVcValidator,
+    private val deviceResponseValidatorFactory: (X5CShouldBe?) -> DeviceResponseValidator,
 ) : ValidateVerifiablePresentation {
     private val vpFormatsSupported = config.clientMetaData.vpFormatsSupported
 
     override suspend fun invoke(
         presentation: Presentation.RequestObjectRetrieved,
+        queryId: QueryId,
         verifiablePresentation: VerifiablePresentation,
         transactionData: NonEmptyList<TransactionData>?,
     ): Either<WalletResponseValidationError, VerifiablePresentation> = either {
-        val issuerChain = presentation.issuerChain?.let { X5CShouldBe.Trusted(rootCACertificates = it, customizePKIX = SkipRevocation) }
+        val issuerChain = issuerTrust(presentation, queryId)
 
         when (verifiablePresentation.format) {
             Format.SdJwtVc -> {
@@ -93,6 +97,20 @@ internal class ValidateSdJwtVcOrMsoMdocVerifiablePresentation(
 
             else ->
                 throw IllegalArgumentException("unsupported format '${verifiablePresentation.format}'")
+        }
+    }
+
+    private suspend fun Raise<WalletResponseValidationError>.issuerTrust(
+        presentation: Presentation.RequestObjectRetrieved,
+        queryId: QueryId,
+    ): X5CShouldBe? {
+        val explicitTrust = trustAuthorityResolver
+            .resolve(queryId, PresentationTrustPolicy.from(presentation.query))
+            .mapLeft { error -> error.toWalletResponseValidationError(queryId) }
+            .bind()
+
+        return explicitTrust ?: presentation.issuerChain?.let {
+            X5CShouldBe.Trusted(rootCACertificates = it, customizePKIX = SkipRevocation)
         }
     }
 
@@ -268,6 +286,27 @@ private fun DeviceResponseError.toWalletResponseValidationError(): WalletRespons
 
     return WalletResponseValidationError.InvalidVpToken(error)
 }
+
+private fun TrustAuthorityResolutionError.toWalletResponseValidationError(
+    queryId: QueryId,
+): WalletResponseValidationError.InvalidVpToken =
+    when (this) {
+        is TrustAuthorityResolutionError.UnsupportedType ->
+            WalletResponseValidationError.InvalidVpToken(
+                "Credential query '${queryId.value}' uses unsupported trusted authority type '${type.value}'",
+            )
+
+        TrustAuthorityResolutionError.NoTrustedCertificates ->
+            WalletResponseValidationError.InvalidVpToken(
+                "Credential query '${queryId.value}' did not resolve trusted certificates",
+            )
+
+        is TrustAuthorityResolutionError.TrustedListFetchFailed ->
+            WalletResponseValidationError.InvalidVpToken(
+                "Credential query '${queryId.value}' failed to fetch trusted list '${location}'" +
+                    (message?.let { ": $it" } ?: ""),
+            )
+    }
 
 private fun Collection<SdJwtVcValidationError>.toJson(): JsonArray =
     JsonArray(

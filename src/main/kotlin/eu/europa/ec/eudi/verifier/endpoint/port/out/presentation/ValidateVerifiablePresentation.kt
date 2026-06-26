@@ -33,12 +33,13 @@ fun interface ValidateVerifiablePresentation {
 
     suspend operator fun invoke(
         presentation: Presentation.RequestObjectRetrieved,
+        queryId: QueryId,
         verifiablePresentation: VerifiablePresentation,
         transactionData: NonEmptyList<TransactionData>?,
     ): Either<WalletResponseValidationError, VerifiablePresentation>
 
     companion object {
         val NoOp: ValidateVerifiablePresentation =
-            ValidateVerifiablePresentation { _, verifiablePresentation, _ -> either { verifiablePresentation } }
+            ValidateVerifiablePresentation { _, _, verifiablePresentation, _ -> either { verifiablePresentation } }
     }
 }

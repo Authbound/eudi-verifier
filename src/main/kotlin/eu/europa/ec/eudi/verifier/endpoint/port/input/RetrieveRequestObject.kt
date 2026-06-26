@@ -152,14 +152,12 @@ class RetrieveRequestObjectLive(
 
             when (method) {
                 is RetrieveRequestObjectMethod.Get -> ensure(
-                    presentation.requestUriMethod == RequestUriMethod.PostOrGet ||
-                        presentation.requestUriMethod == RequestUriMethod.Get,
+                    presentation.requestUriMethod == RequestUriMethod.Get,
                 ) {
                     RetrieveRequestObjectError.InvalidRequestUriMethod(presentation.requestUriMethod)
                 }
                 is RetrieveRequestObjectMethod.Post -> ensure(
-                    presentation.requestUriMethod == RequestUriMethod.PostOrGet ||
-                        presentation.requestUriMethod == RequestUriMethod.Post,
+                    presentation.requestUriMethod == RequestUriMethod.Post,
                 ) {
                     RetrieveRequestObjectError.InvalidRequestUriMethod(presentation.requestUriMethod)
                 }
@@ -402,6 +400,7 @@ private fun ResponseModeOption.name(): String =
     when (this) {
         ResponseModeOption.DirectPost -> OpenId4VPSpec.RESPONSE_MODE_DIRECT_POST
         ResponseModeOption.DirectPostJwt -> OpenId4VPSpec.RESPONSE_MODE_DIRECT_POST_JWT
+        ResponseModeOption.DcApiJwt -> OpenId4VPSpec.RESPONSE_MODE_DC_API_JWT
     }
 
 private fun <T> commonGround(

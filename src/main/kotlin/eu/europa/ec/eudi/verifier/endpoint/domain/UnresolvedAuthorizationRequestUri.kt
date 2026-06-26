@@ -34,7 +34,7 @@ value class UnresolvedAuthorizationRequestUri private constructor(val value: Uri
             .apply {
                 val requestUriMethod = when (requestUriMethod) {
                     RequestUriMethod.Get -> OpenId4VPSpec.REQUEST_URI_METHOD_GET
-                    RequestUriMethod.Post, RequestUriMethod.PostOrGet -> OpenId4VPSpec.REQUEST_URI_METHOD_POST
+                    RequestUriMethod.Post -> OpenId4VPSpec.REQUEST_URI_METHOD_POST
                 }
                 appendQueryParameter(OpenId4VPSpec.REQUEST_URI_METHOD, requestUriMethod)
             }
@@ -42,10 +42,15 @@ value class UnresolvedAuthorizationRequestUri private constructor(val value: Uri
 
     companion object {
         val DisallowedQueryParameters = setOf(RFC6749.CLIENT_ID, RFC9101.REQUEST, RFC9101.REQUEST_URI, OpenId4VPSpec.REQUEST_URI_METHOD)
+        val DisallowedSchemes = setOf("about", "blob", "data", "file", "javascript", "vbscript")
 
         fun fromUri(value: String): Result<UnresolvedAuthorizationRequestUri> = runCatching {
             require(value.isNotBlank()) { "value cannot be blank" }
             val uri = Uri.parse(value)
+            require(uri.scheme != null) { "value must include a URI scheme" }
+            require(uri.scheme?.lowercase() !in DisallowedSchemes) {
+                "value must not use a browser-executable or local file scheme"
+            }
             require(uri.getQueryParameterNames().none { it in DisallowedQueryParameters }) {
                 "value must not contain any of the following query parameters: '${DisallowedQueryParameters.joinToString()}'"
             }
@@ -55,6 +60,9 @@ value class UnresolvedAuthorizationRequestUri private constructor(val value: Uri
         fun fromScheme(scheme: String): Result<UnresolvedAuthorizationRequestUri> = runCatching {
             require(scheme.matches("^[A-Za-z][A-Za-z0-9+-.]*$".toRegex())) {
                 "'$scheme' is not a valid URI scheme"
+            }
+            require(scheme.lowercase() !in DisallowedSchemes) {
+                "'$scheme' must not be a browser-executable or local file scheme"
             }
             fromUri("$scheme://").getOrThrow()
         }

@@ -493,7 +493,8 @@
         "nullable": false,
         "enum": [
           "direct_post",
-          "direct_post.jwt"
+          "direct_post.jwt",
+          "dc_api.jwt"
         ]
       },
       "EmbedMode": {
@@ -509,9 +510,35 @@
         "nullable": false,
         "enum": [
           "get",
-          "post",
-          "post_get"
+          "post"
         ]
+      },
+      "VerifierAttestationFormat": {
+        "type": "string",
+        "nullable": false,
+        "enum": [
+          "jwt"
+        ]
+      },
+      "VerifierAttestation": {
+        "type": "object",
+        "nullable": false,
+        "properties": {
+          "format": {
+            "$ref": "#/components/schemas/VerifierAttestationFormat"
+          },
+          "data": {
+            "type": "string",
+            "nullable": false,
+            "minLength": 1,
+            "pattern": "\\S"
+          }
+        },
+        "required": [
+          "format",
+          "data"
+        ],
+        "additionalProperties": false
       },
       "UriTemplate": {
         "type": "string",
@@ -519,7 +546,8 @@
         "format": "uri"
       },
       "AuthorizationRequestScheme": {
-        "type": "string"
+        "type": "string",
+        "pattern": "^[A-Za-z][A-Za-z0-9+.-]*$"
       },
       "DcqlQuery": {
         "description": "Query using the Digital Credentials Query Language as defined by OpenId4VP. More information here: https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#name-digital-credentials-query-l",
@@ -627,6 +655,27 @@
                 "$ref": "#/components/schemas/RequestUriMethod"
               }
             ]
+          },
+          "expected_origins": {
+            "description": "HTTPS origins that may invoke the Digital Credentials API flow. Required when 'response_mode' is 'dc_api.jwt'.",
+            "type": "array",
+            "nullable": false,
+            "items": {
+              "type": "string",
+              "nullable": false,
+              "format": "uri",
+              "pattern": "^https://[^/?#@]+/?$"
+            },
+            "minItems": 1
+          },
+          "verifier_attestations": {
+            "description": "Verifier attestations to include in the OpenID4VP authorization request.",
+            "type": "array",
+            "nullable": false,
+            "items": {
+              "$ref": "#/components/schemas/VerifierAttestation"
+            },
+            "minItems": 1
           },
           "wallet_response_redirect_uri_template": {
             "allOf": [
@@ -959,6 +1008,9 @@
           "InvalidTransactionData",
           "UnsupportedFormat",
           "InvalidIssuerChain",
+          "MissingExpectedOrigins",
+          "InvalidExpectedOrigins",
+          "InvalidVerifierAttestations",
           "ContainsBothAuthorizationRequestUriAndAuthorizationRequestScheme",
           "InvalidAuthorizationRequestUri",
           "InvalidAuthorizationRequestScheme",
@@ -968,7 +1020,7 @@
           "HaipNotSupported.SelfSignedCertificateMustNotBeUsed",
           "HaipNotSupported.EncryptionAlgorithmECDHESMustBeSupported",
           "HaipNotSupported.EncryptionMethodsA128GCMAndA256GCMMustBeSupported",
-          "HaipNotSupported.ResponseModeDirectPostJwtMustBeUsed",
+          "HaipNotSupported.ResponseModeDirectPostJwtOrDcApiJwtMustBeUsed",
           "HaipNotSupported.AuthorizationRequestMustBeProvidedByReference"
         ]
       },

@@ -113,7 +113,15 @@ class WalletApi(
         logger.info("Handling PostWalletResponse ...")
         val requestId = req.requestId()
         val walletResponse = req.awaitFormData().walletResponse()
-        logger.info("Wallet response: $walletResponse")
+        val responseKind = when (walletResponse) {
+            is AuthorisationResponse.DirectPost -> OpenId4VPSpec.RESPONSE_MODE_DIRECT_POST
+            is AuthorisationResponse.DirectPostJwt -> OpenId4VPSpec.RESPONSE_MODE_DIRECT_POST_JWT
+        }
+        logger.info(
+            "Wallet response received for request_id={} response_kind={}",
+            requestId.value,
+            responseKind,
+        )
         postWalletResponse(requestId, walletResponse).fold(
             ifRight = { response ->
                 logger.info("PostWalletResponse processed $response")

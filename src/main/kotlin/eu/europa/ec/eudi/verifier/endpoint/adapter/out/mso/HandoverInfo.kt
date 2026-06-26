@@ -15,6 +15,7 @@
  */
 package eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso
 
+import arrow.core.NonEmptyList
 import com.nimbusds.jose.jwk.JWK
 import eu.europa.ec.eudi.verifier.endpoint.domain.Nonce
 import eu.europa.ec.eudi.verifier.endpoint.domain.Presentation
@@ -39,7 +40,7 @@ sealed interface HandoverInfo {
     }
 
     data class OpenID4VPDCAPIHandoverInfo(
-        val origin: URL,
+        val expectedOrigins: NonEmptyList<String>,
         val nonce: Nonce,
         val ephemeralEncryptionKey: JWK?,
     ) : HandoverInfo {
@@ -54,14 +55,24 @@ sealed interface HandoverInfo {
         operator fun invoke(
             presentation: Presentation.RequestObjectRetrieved,
             config: VerifierConfig,
-        ): HandoverInfo = OpenID4VPHandoverInfo(
-            clientId = config.verifierId,
-            nonce = presentation.nonce,
-            ephemeralEncryptionKey = when (val responseMode = presentation.responseMode) {
-                ResponseMode.DirectPost -> null
-                is ResponseMode.DirectPostJwt -> responseMode.ephemeralResponseEncryptionKey.toPublicJWK()
-            },
-            responseUri = config.responseUriBuilder(presentation.requestId),
-        )
+        ): HandoverInfo =
+            when (val responseMode = presentation.responseMode) {
+                ResponseMode.DirectPost,
+                is ResponseMode.DirectPostJwt -> OpenID4VPHandoverInfo(
+                    clientId = config.verifierId,
+                    nonce = presentation.nonce,
+                    ephemeralEncryptionKey = when (responseMode) {
+                        ResponseMode.DirectPost -> null
+                        is ResponseMode.DirectPostJwt -> responseMode.ephemeralResponseEncryptionKey.toPublicJWK()
+                        is ResponseMode.DcApiJwt -> error("unreachable")
+                    },
+                    responseUri = config.responseUriBuilder(presentation.requestId),
+                )
+                is ResponseMode.DcApiJwt -> OpenID4VPDCAPIHandoverInfo(
+                    expectedOrigins = responseMode.expectedOrigins,
+                    nonce = presentation.nonce,
+                    ephemeralEncryptionKey = responseMode.ephemeralResponseEncryptionKey.toPublicJWK(),
+                )
+            }
     }
 }

@@ -44,6 +44,7 @@ import org.springframework.data.domain.Range
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.data.redis.core.script.DefaultRedisScript
 import java.io.ByteArrayInputStream
+import java.net.URL
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.Base64
@@ -329,6 +330,7 @@ class PresentationRedisRepo(
         override val id: String,
         override val initiatedAt: Long,
         val query: DCQL,
+        val walletFacingQuery: DCQL = query,
         val transactionData: List<String>?,
         val requestId: String,
         val requestUriMethod: String,
@@ -337,6 +339,7 @@ class PresentationRedisRepo(
         val getWalletResponseMethod: GetWalletResponseMethodRecord,
         val issuerChain: List<String>?,
         val profile: ProfileRecord,
+        val verifierAttestations: List<VerifierAttestation>? = null,
     ) : PresentationRecord
 
     @Serializable
@@ -345,6 +348,7 @@ class PresentationRedisRepo(
         override val id: String,
         override val initiatedAt: Long,
         val query: DCQL,
+        val walletFacingQuery: DCQL = query,
         val transactionData: List<String>?,
         val requestId: String,
         val requestObjectRetrievedAt: Long,
@@ -353,6 +357,7 @@ class PresentationRedisRepo(
         val getWalletResponseMethod: GetWalletResponseMethodRecord,
         val issuerChain: List<String>?,
         val profile: ProfileRecord,
+        val verifierAttestations: List<VerifierAttestation>? = null,
     ) : PresentationRecord
 
     @Serializable
@@ -391,6 +396,13 @@ class PresentationRedisRepo(
     @SerialName("direct_post_jwt")
     private data class DirectPostJwtRecord(
         val jwkJson: String,
+    ) : ResponseModeRecord
+
+    @Serializable
+    @SerialName("dc_api_jwt")
+    private data class DcApiJwtRecord(
+        val jwkJson: String,
+        val expectedOrigins: List<String>,
     ) : ResponseModeRecord
 
     @Serializable
@@ -605,6 +617,7 @@ class PresentationRedisRepo(
             id = id.value,
             initiatedAt = initiatedAt.toEpochMilliseconds(),
             query = query,
+            walletFacingQuery = walletFacingQuery,
             transactionData = transactionData?.map { it.base64Url },
             requestId = requestId.value,
             requestUriMethod = requestUriMethod.name,
@@ -613,11 +626,13 @@ class PresentationRedisRepo(
             getWalletResponseMethod = getWalletResponseMethod.toRecord(),
             issuerChain = issuerChain?.let { encodeIssuerChain(it) },
             profile = profile.toRecord(),
+            verifierAttestations = verifierAttestations,
         )
         is Presentation.RequestObjectRetrieved -> RequestObjectRetrievedRecord(
             id = id.value,
             initiatedAt = initiatedAt.toEpochMilliseconds(),
             query = query,
+            walletFacingQuery = walletFacingQuery,
             transactionData = transactionData?.map { it.base64Url },
             requestId = requestId.value,
             requestObjectRetrievedAt = requestObjectRetrievedAt.toEpochMilliseconds(),
@@ -626,6 +641,7 @@ class PresentationRedisRepo(
             getWalletResponseMethod = getWalletResponseMethod.toRecord(),
             issuerChain = issuerChain?.let { encodeIssuerChain(it) },
             profile = profile.toRecord(),
+            verifierAttestations = verifierAttestations,
         )
         is Presentation.Submitted -> SubmittedRecord(
             id = id.value,
@@ -652,6 +668,7 @@ class PresentationRedisRepo(
             id = TransactionId(id),
             initiatedAt = Instant.fromEpochMilliseconds(initiatedAt),
             query = query,
+            walletFacingQuery = walletFacingQuery,
             transactionData = transactionData?.map { TransactionData.fromBase64Url(it).getOrThrow() }?.toNonEmptyListOrNull(),
             requestId = RequestId(requestId),
             requestUriMethod = RequestUriMethod.valueOf(requestUriMethod),
@@ -660,11 +677,13 @@ class PresentationRedisRepo(
             getWalletResponseMethod = getWalletResponseMethod.toDomain(),
             issuerChain = issuerChain?.let { decodeIssuerChain(it) },
             profile = profile.toDomain(),
+            verifierAttestations = verifierAttestations,
         )
         is RequestObjectRetrievedRecord -> Presentation.RequestObjectRetrieved.restore(
             id = TransactionId(id),
             initiatedAt = Instant.fromEpochMilliseconds(initiatedAt),
             query = query,
+            walletFacingQuery = walletFacingQuery,
             transactionData = transactionData?.map { TransactionData.fromBase64Url(it).getOrThrow() }?.toNonEmptyListOrNull(),
             requestId = RequestId(requestId),
             requestObjectRetrievedAt = Instant.fromEpochMilliseconds(requestObjectRetrievedAt),
@@ -673,6 +692,7 @@ class PresentationRedisRepo(
             getWalletResponseMethod = getWalletResponseMethod.toDomain(),
             issuerChain = issuerChain?.let { decodeIssuerChain(it) },
             profile = profile.toDomain(),
+            verifierAttestations = verifierAttestations,
         )
         is SubmittedRecord -> Presentation.Submitted.restore(
             id = TransactionId(id),
@@ -697,11 +717,19 @@ class PresentationRedisRepo(
     private fun ResponseMode.toRecord(): ResponseModeRecord = when (this) {
         ResponseMode.DirectPost -> DirectPostRecord
         is ResponseMode.DirectPostJwt -> DirectPostJwtRecord(jwkJson = ephemeralResponseEncryptionKey.toJSONString())
+        is ResponseMode.DcApiJwt -> DcApiJwtRecord(
+            jwkJson = ephemeralResponseEncryptionKey.toJSONString(),
+            expectedOrigins = expectedOrigins,
+        )
     }
 
     private fun ResponseModeRecord.toDomain(): ResponseMode = when (this) {
         is DirectPostRecord -> ResponseMode.DirectPost
         is DirectPostJwtRecord -> ResponseMode.DirectPostJwt(JWK.parse(jwkJson))
+        is DcApiJwtRecord -> ResponseMode.DcApiJwt(
+            JWK.parse(jwkJson),
+            expectedOrigins.toNonEmptyListOrNull()!!,
+        )
     }
 
     private fun GetWalletResponseMethod.toRecord(): GetWalletResponseMethodRecord = when (this) {

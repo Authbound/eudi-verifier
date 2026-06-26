@@ -114,9 +114,9 @@ class FetchLOTLCertificatesDSS(
         isPivotSupport = true
         trustAnchorValidityPredicate = GrantedOrRecognizedAtNationalLevelTrustAnchorPeriodPredicate()
         tlVersions = listOf(5, 6)
-        trustedListConfig.serviceTypeFilter?.let {
+        trustedListConfig.serviceTypeFilters.takeIf { it.isNotEmpty() }?.let {
             trustServicePredicate = Predicate { tspServiceType ->
-                tspServiceType.serviceInformation.serviceTypeIdentifier == it.value
+                trustedListConfig.matchesServiceType(tspServiceType.serviceInformation.serviceTypeIdentifier)
             }
         }
     }
@@ -133,3 +133,6 @@ class FetchLOTLCertificatesDSS(
             }
         }
 }
+
+internal fun TrustedListConfig.matchesServiceType(serviceTypeIdentifier: String): Boolean =
+    serviceTypeFilters.isEmpty() || serviceTypeFilters.any { serviceTypeIdentifier in it.serviceTypeIdentifiers }

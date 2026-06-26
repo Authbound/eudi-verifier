@@ -64,9 +64,6 @@ enum class RequestUriMethodTO {
 
     @SerialName(OpenId4VPSpec.REQUEST_URI_METHOD_POST)
     Post,
-
-    @SerialName("post_get")
-    PostOrGet,
 }
 
 /**
@@ -79,6 +76,9 @@ enum class ResponseModeTO {
 
     @SerialName(OpenId4VPSpec.RESPONSE_MODE_DIRECT_POST_JWT)
     DirectPostJwt,
+
+    @SerialName(OpenId4VPSpec.RESPONSE_MODE_DC_API_JWT)
+    DcApiJwt,
 }
 
 /**
@@ -120,6 +120,9 @@ data class InitTransactionTO(
     @SerialName(OpenId4VPSpec.REQUEST_URI_METHOD) val requestUriMethod: RequestUriMethodTO? = null,
     @SerialName("wallet_response_redirect_uri_template") val redirectUriTemplate: String? = null,
     @SerialName(OpenId4VPSpec.TRANSACTION_DATA) val transactionData: List<JsonObject>? = null,
+    @SerialName(OpenId4VPSpec.EXPECTED_ORIGINS) val expectedOrigins: List<String>? = null,
+    @SerialName(OpenId4VPSpec.STRIP_TRUSTED_AUTHORITIES_FOR_WALLET) val stripTrustedAuthoritiesForWallet: Boolean? = null,
+    @SerialName(OpenId4VPSpec.VERIFIER_ATTESTATIONS) val verifierAttestations: List<VerifierAttestation>? = null,
     @SerialName("issuer_chain") val issuerChain: String? = null,
     @SerialName("authorization_request_scheme") val authorizationRequestScheme: String? = null,
     @SerialName("authorization_request_uri") val authorizationRequestUri: String? = null,
@@ -140,6 +143,9 @@ sealed interface ValidationError {
     data object InvalidTransactionData : ValidationError
     data object UnsupportedFormat : ValidationError
     data object InvalidIssuerChain : ValidationError
+    data object MissingExpectedOrigins : ValidationError
+    data object InvalidExpectedOrigins : ValidationError
+    data object InvalidVerifierAttestations : ValidationError
     data object ContainsBothAuthorizationRequestUriAndAuthorizationRequestScheme : ValidationError
     data object InvalidAuthorizationRequestUri : ValidationError
     data object InvalidAuthorizationRequestScheme : ValidationError
@@ -151,7 +157,7 @@ sealed interface ValidationError {
         data object SelfSignedCertificateMustNotBeUsed : HaipNotSupported
         data object EncryptionAlgorithmECDHESMustBeSupported : HaipNotSupported
         data object EncryptionMethodsA128GCMAndA256GCMMustBeSupported : HaipNotSupported
-        data object ResponseModeDirectPostJwtMustBeUsed : HaipNotSupported
+        data object ResponseModeDirectPostJwtOrDcApiJwtMustBeUsed : HaipNotSupported
         data object AuthorizationRequestMustBeProvidedByReference : HaipNotSupported
     }
 }
@@ -279,6 +285,7 @@ class InitTransactionLive(
 
         val getWalletResponseMethod = getWalletResponseMethod(initTransactionTO).bind()
         val issuerChain = issuerChain(initTransactionTO).bind()
+        val verifierAttestations = verifierAttestations(initTransactionTO).bind()
 
         val profile = initTransactionTO.profileOrDefault.toProfile()
 
@@ -287,6 +294,7 @@ class InitTransactionLive(
             id = generateTransactionId(),
             initiatedAt = clock.now(),
             query = type.query,
+            walletFacingQuery = type.query.walletFacing(initTransactionTO.stripTrustedAuthoritiesForWallet ?: false),
             transactionData = type.transactionData,
             requestId = generateRequestId(),
             nonce = nonce,
@@ -295,6 +303,7 @@ class InitTransactionLive(
             requestUriMethod = requestUriMethod(initTransactionTO),
             issuerChain = issuerChain,
             profile = profile,
+            verifierAttestations = verifierAttestations,
         )
 
         val jarMode = jarMode(initTransactionTO)
@@ -389,10 +398,11 @@ class InitTransactionLive(
     /**
      * Gets the [ResponseMode] for the provided [InitTransactionTO].
      */
-    private fun responseMode(initTransaction: InitTransactionTO): ResponseMode {
+    private fun Raise<ValidationError>.responseMode(initTransaction: InitTransactionTO): ResponseMode {
         val responseModeOption = when (initTransaction.responseMode) {
             ResponseModeTO.DirectPost -> ResponseModeOption.DirectPost
             ResponseModeTO.DirectPostJwt -> ResponseModeOption.DirectPostJwt
+            ResponseModeTO.DcApiJwt -> ResponseModeOption.DcApiJwt
             null -> verifierConfig.responseModeOption
         }
 
@@ -402,8 +412,31 @@ class InitTransactionLive(
                 val responseEncryptionKey = generateEphemeralEncryptionKeyPair().getOrThrow()
                 ResponseMode.DirectPostJwt(responseEncryptionKey)
             }
+            ResponseModeOption.DcApiJwt -> {
+                val expectedOrigins = expectedOrigins(initTransaction)
+                val responseEncryptionKey = generateEphemeralEncryptionKeyPair().getOrThrow()
+                ResponseMode.DcApiJwt(responseEncryptionKey, expectedOrigins)
+            }
         }
     }
+
+    private fun Raise<ValidationError>.expectedOrigins(initTransaction: InitTransactionTO): NonEmptyList<String> =
+        initTransaction.expectedOrigins
+            ?.map { origin ->
+                Either.catch {
+                    val uri = URI(origin)
+                    require(uri.scheme.equals("https", ignoreCase = true)) { "Expected origin must use https" }
+                    require(!uri.host.isNullOrBlank()) { "Expected origin must include host" }
+                    require(uri.userInfo == null) { "Expected origin must not include user info" }
+                    require(uri.rawPath.isNullOrBlank() || uri.rawPath == "/") { "Expected origin must not include path" }
+                    require(uri.rawQuery == null) { "Expected origin must not include query" }
+                    require(uri.rawFragment == null) { "Expected origin must not include fragment" }
+                    val port = uri.port.takeIf { it != -1 && it != 443 }?.let { ":$it" } ?: ""
+                    "https://${uri.host.lowercase()}$port"
+                }.getOrElse { raise(ValidationError.InvalidExpectedOrigins) }
+            }
+            ?.toNonEmptyListOrNull()
+            ?: raise(ValidationError.MissingExpectedOrigins)
 
     /**
      * Gets the JAR [EmbedOption] for the provided [InitTransactionTO].
@@ -424,7 +457,6 @@ class InitTransactionLive(
         when (initTransaction.requestUriMethod) {
             RequestUriMethodTO.Get -> RequestUriMethod.Get
             RequestUriMethodTO.Post -> RequestUriMethod.Post
-            RequestUriMethodTO.PostOrGet -> RequestUriMethod.PostOrGet
             null -> verifierConfig.requestUriMethod
         }
 
@@ -441,6 +473,13 @@ class InitTransactionLive(
         Either.catch {
             initTransaction.issuerChain?.let { parsePemEncodedX509CertificateChain(it).getOrThrow() }
         }.mapLeft { ValidationError.InvalidIssuerChain }
+
+    private fun verifierAttestations(initTransaction: InitTransactionTO): Either<ValidationError, List<VerifierAttestation>?> =
+        Either.catch {
+            initTransaction.verifierAttestations?.also { attestations ->
+                require(attestations.isNotEmpty()) { "Verifier attestations cannot be empty" }
+            }
+        }.mapLeft { ValidationError.InvalidVerifierAttestations }
 
     /**
      * Gets the [UnresolvedAuthorizationRequestUri] for the provided [InitTransactionTO].
@@ -528,7 +567,6 @@ private fun RequestUriMethod.toTO(): RequestUriMethodTO =
     when (this) {
         RequestUriMethod.Get -> RequestUriMethodTO.Get
         RequestUriMethod.Post -> RequestUriMethodTO.Post
-        RequestUriMethod.PostOrGet -> RequestUriMethodTO.PostOrGet
     }
 
 private fun <T : Any, U : T> Collection<T>.containsAny(first: U, vararg rest: U): Boolean = first in this || rest.any { it in this }
@@ -591,8 +629,11 @@ private fun interface ProfileValidator {
                 ValidationError.HaipNotSupported.SelfSignedCertificateMustNotBeUsed
             }
 
-            ensure(presentation.responseMode is ResponseMode.DirectPostJwt) {
-                ValidationError.HaipNotSupported.ResponseModeDirectPostJwtMustBeUsed
+            ensure(
+                presentation.responseMode is ResponseMode.DirectPostJwt ||
+                    presentation.responseMode is ResponseMode.DcApiJwt,
+            ) {
+                ValidationError.HaipNotSupported.ResponseModeDirectPostJwtOrDcApiJwtMustBeUsed
             }
 
             ensure(jarMode is EmbedOption.ByReference) {

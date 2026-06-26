@@ -156,6 +156,12 @@ internal class VerifierApi(
                     "UnsupportedFormat"
                 ValidationError.InvalidIssuerChain ->
                     "InvalidIssuerChain"
+                ValidationError.MissingExpectedOrigins ->
+                    "MissingExpectedOrigins"
+                ValidationError.InvalidExpectedOrigins ->
+                    "InvalidExpectedOrigins"
+                ValidationError.InvalidVerifierAttestations ->
+                    "InvalidVerifierAttestations"
                 ValidationError.ContainsBothAuthorizationRequestUriAndAuthorizationRequestScheme ->
                     "ContainsBothAuthorizationRequestUriAndAuthorizationRequestScheme"
                 ValidationError.InvalidAuthorizationRequestUri ->
@@ -174,8 +180,8 @@ internal class VerifierApi(
                     "HaipNotSupported.EncryptionAlgorithmECDHESMustBeSupported"
                 ValidationError.HaipNotSupported.EncryptionMethodsA128GCMAndA256GCMMustBeSupported ->
                     "HaipNotSupported.EncryptionMethodsA128GCMAndA256GCMMustBeSupported"
-                ValidationError.HaipNotSupported.ResponseModeDirectPostJwtMustBeUsed ->
-                    "HaipNotSupported.ResponseModeDirectPostJwtMustBeUsed"
+                ValidationError.HaipNotSupported.ResponseModeDirectPostJwtOrDcApiJwtMustBeUsed ->
+                    "HaipNotSupported.ResponseModeDirectPostJwtOrDcApiJwtMustBeUsed"
                 ValidationError.HaipNotSupported.AuthorizationRequestMustBeProvidedByReference ->
                     "HaipNotSupported.AuthorizationRequestMustBeProvidedByReference"
             }

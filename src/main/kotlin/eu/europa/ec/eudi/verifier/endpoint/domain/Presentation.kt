@@ -133,6 +133,7 @@ sealed interface Presentation {
         override val id: TransactionId,
         override val initiatedAt: Instant,
         val query: DCQL,
+        val walletFacingQuery: DCQL = query,
         val transactionData: NonEmptyList<TransactionData>?,
         val requestId: RequestId,
         val requestUriMethod: RequestUriMethod,
@@ -141,6 +142,7 @@ sealed interface Presentation {
         val getWalletResponseMethod: GetWalletResponseMethod,
         val issuerChain: NonEmptyList<X509Certificate>?,
         val profile: Profile,
+        val verifierAttestations: List<VerifierAttestation>? = null,
     ) : Presentation
 
     /**
@@ -153,6 +155,7 @@ sealed interface Presentation {
         override val id: TransactionId,
         override val initiatedAt: Instant,
         val query: DCQL,
+        val walletFacingQuery: DCQL = query,
         val transactionData: NonEmptyList<TransactionData>?,
         val requestId: RequestId,
         val requestObjectRetrievedAt: Instant,
@@ -161,6 +164,7 @@ sealed interface Presentation {
         val getWalletResponseMethod: GetWalletResponseMethod,
         val issuerChain: NonEmptyList<X509Certificate>?,
         val profile: Profile,
+        val verifierAttestations: List<VerifierAttestation>? = null,
     ) : Presentation {
         init {
             require(initiatedAt <= requestObjectRetrievedAt)
@@ -173,6 +177,7 @@ sealed interface Presentation {
                         requested.id,
                         requested.initiatedAt,
                         requested.query,
+                        requested.walletFacingQuery,
                         requested.transactionData,
                         requested.requestId,
                         at,
@@ -181,6 +186,7 @@ sealed interface Presentation {
                         requested.getWalletResponseMethod,
                         requested.issuerChain,
                         requested.profile,
+                        requested.verifierAttestations,
                     )
                 }
 
@@ -188,6 +194,7 @@ sealed interface Presentation {
                 id: TransactionId,
                 initiatedAt: Instant,
                 query: DCQL,
+                walletFacingQuery: DCQL = query,
                 transactionData: NonEmptyList<TransactionData>?,
                 requestId: RequestId,
                 requestObjectRetrievedAt: Instant,
@@ -196,11 +203,13 @@ sealed interface Presentation {
                 getWalletResponseMethod: GetWalletResponseMethod,
                 issuerChain: NonEmptyList<X509Certificate>?,
                 profile: Profile,
+                verifierAttestations: List<VerifierAttestation>? = null,
             ): RequestObjectRetrieved =
                 RequestObjectRetrieved(
                     id,
                     initiatedAt,
                     query,
+                    walletFacingQuery,
                     transactionData,
                     requestId,
                     requestObjectRetrievedAt,
@@ -209,6 +218,7 @@ sealed interface Presentation {
                     getWalletResponseMethod,
                     issuerChain,
                     profile,
+                    verifierAttestations,
                 )
         }
     }

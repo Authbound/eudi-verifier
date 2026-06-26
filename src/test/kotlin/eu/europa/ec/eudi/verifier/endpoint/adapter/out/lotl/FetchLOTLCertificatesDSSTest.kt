@@ -16,14 +16,56 @@
 package eu.europa.ec.eudi.verifier.endpoint.adapter.out.lotl
 
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.utils.getOrThrow
+import eu.europa.ec.eudi.verifier.endpoint.domain.ProviderKind
 import eu.europa.ec.eudi.verifier.endpoint.domain.TrustedListConfig
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
 import java.net.URI
 import java.security.KeyStore
 
 class FetchLOTLCertificatesDSSTest {
+
+    @Test
+    fun `trusted list service predicate accepts only configured eudi credential provider types`() {
+        val config = TrustedListConfig(
+            URI("https://trust.example/lote.jwt").toURL(),
+            serviceTypeFilter = null,
+            keystoreConfig = null,
+            serviceTypeFilters = ProviderKind.eudiAttestationProviderKinds,
+        )
+
+        assertTrue(config.matchesServiceType(ProviderKind.EAAProvider.value))
+        assertTrue(config.matchesServiceType("http://uri.etsi.org/19602/SvcType/EAA/Issuance"))
+        assertTrue(config.matchesServiceType(ProviderKind.QEEAProvider.value))
+        assertTrue(config.matchesServiceType("http://uri.etsi.org/19602/SvcType/QEAA/Issuance"))
+        assertTrue(config.matchesServiceType("http://uri.etsi.org/19602/SvcType/EAA/Q/Issuance"))
+        assertTrue(config.matchesServiceType(ProviderKind.PubEAAProvider.value))
+        assertTrue(config.matchesServiceType("http://uri.etsi.org/19602/SvcType/PubEAA/Issuance"))
+        assertFalse(config.matchesServiceType(ProviderKind.PIDProvider.value))
+        assertFalse(config.matchesServiceType("http://uri.etsi.org/19602/SvcType/PID/Issuance"))
+        assertFalse(config.matchesServiceType("http://uri.etsi.org/19602/SvcType/EAA/Revocation"))
+        assertFalse(config.matchesServiceType("http://uri.etsi.org/TrstSvc/Svctype/CA/QC"))
+    }
+
+    @Test
+    fun `trusted list service predicate accepts supported pid provider profile types`() {
+        val config = TrustedListConfig(
+            URI("https://trust.example/lote.jwt").toURL(),
+            serviceTypeFilter = null,
+            keystoreConfig = null,
+            serviceTypeFilters = setOf(ProviderKind.PIDProvider),
+        )
+
+        assertTrue(config.matchesServiceType("https://ewc-consortium.github.io/ewc-trust-list/TrstSvc/Svctype/PID"))
+        assertTrue(config.matchesServiceType("http://uri.etsi.org/Svc/Svctype/Provider/PID"))
+        assertTrue(config.matchesServiceType("http://uri.etsi.org/19602/SvcType/PID/Issuance"))
+        assertTrue(config.matchesServiceType("http://uri.etsi.org/19602/SvcType/EAA/Issuance"))
+        assertFalse(config.matchesServiceType(ProviderKind.EAAProvider.value))
+        assertFalse(config.matchesServiceType("http://uri.etsi.org/TrstSvc/Svctype/CA/QC"))
+    }
 
     // @Test
     fun `get certs`() = runTest {
