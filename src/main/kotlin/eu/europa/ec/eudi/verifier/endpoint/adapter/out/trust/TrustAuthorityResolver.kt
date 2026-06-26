@@ -20,7 +20,6 @@ import arrow.core.NonEmptyList
 import arrow.core.getOrElse
 import arrow.core.raise.*
 import arrow.core.toNonEmptyListOrNull
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.FetchOpenIdFederationEntityConfiguration
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.SkipRevocation
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.domain.PresentationTrustPolicy
@@ -28,12 +27,14 @@ import eu.europa.ec.eudi.verifier.endpoint.domain.QueryId
 import eu.europa.ec.eudi.verifier.endpoint.domain.TrustedAuthorityType
 import eu.europa.ec.eudi.verifier.endpoint.domain.TrustedListConfig
 import eu.europa.ec.eudi.verifier.endpoint.port.out.lotl.FetchLOTLCertificates
+import java.net.InetAddress
 import java.net.URI
+import java.net.URL
 
 sealed interface TrustAuthorityResolutionError {
     data class UnsupportedType(val type: TrustedAuthorityType) : TrustAuthorityResolutionError
     data object NoTrustedCertificates : TrustAuthorityResolutionError
-    data class TrustedListFetchFailed(val location: String, val message: String?) : TrustAuthorityResolutionError
+    data class TrustedListFetchFailed(val message: String?) : TrustAuthorityResolutionError
 }
 
 fun interface TrustAuthorityResolver {
@@ -45,8 +46,6 @@ fun interface TrustAuthorityResolver {
 
 class TrustAuthorityResolverLive(
     private val fetchLOTLCertificates: FetchLOTLCertificates,
-    private val fetchOpenIdFederationEntityConfiguration: FetchOpenIdFederationEntityConfiguration =
-        FetchOpenIdFederationEntityConfigurationHttp(),
 ) : TrustAuthorityResolver {
 
     override suspend fun resolve(
@@ -54,15 +53,9 @@ class TrustAuthorityResolverLive(
         policy: PresentationTrustPolicy,
     ): Either<TrustAuthorityResolutionError, X5CShouldBe?> = either {
         val authorities = policy.authoritiesFor(queryId) ?: return@either null
-        val authorityKeyIdentifierAuthorities = authorities.filter {
-            it.type == TrustedAuthorityType.AuthorityKeyIdentifier
-        }
         val trustedListAuthorities = authorities.filter { it.type == TrustedAuthorityType.TrustedList }
-        val openIdFederationAuthorities = authorities.filter { it.type == TrustedAuthorityType.OpenIdFederation }
         val unsupported = authorities.firstOrNull {
-            it.type != TrustedAuthorityType.AuthorityKeyIdentifier &&
-                it.type != TrustedAuthorityType.TrustedList &&
-                it.type != TrustedAuthorityType.OpenIdFederation
+            it.type != TrustedAuthorityType.TrustedList
         }
         if (unsupported != null) {
             raise(TrustAuthorityResolutionError.UnsupportedType(unsupported.type))
@@ -71,9 +64,9 @@ class TrustAuthorityResolverLive(
         val trustedListCertificates =
             trustedListAuthorities.flatMap { authority ->
                 authority.values.flatMap { value ->
-                    val location = Either.catch { URI(value).toURL() }
+                    val location = trustedListLocation(value)
                         .getOrElse { error ->
-                            raise(TrustAuthorityResolutionError.TrustedListFetchFailed(value, error.message))
+                            raise(error)
                         }
                     fetchLOTLCertificates(
                         TrustedListConfig(
@@ -84,7 +77,6 @@ class TrustAuthorityResolverLive(
                         ),
                     ).mapLeft { error ->
                         TrustAuthorityResolutionError.TrustedListFetchFailed(
-                            location.toExternalForm(),
                             error.message,
                         )
                     }.bind()
@@ -92,23 +84,6 @@ class TrustAuthorityResolverLive(
             }
 
         val policies = buildList {
-            authorityKeyIdentifierAuthorities
-                .flatMap { it.values }
-                .toNonEmptyListOrNull()
-                ?.let { add(X5CShouldBe.AuthorityKeyIdentifier(it)) }
-
-            openIdFederationAuthorities
-                .flatMap { it.values }
-                .toNonEmptyListOrNull()
-                ?.let {
-                    add(
-                        X5CShouldBe.OpenIdFederation(
-                            trustAnchors = it,
-                            fetchEntityConfiguration = fetchOpenIdFederationEntityConfiguration,
-                        ),
-                    )
-                }
-
             if (trustedListAuthorities.isNotEmpty()) {
                 val roots = trustedListCertificates.toNonEmptyListOrNull()
                 ensure(roots != null) { TrustAuthorityResolutionError.NoTrustedCertificates }
@@ -119,6 +94,20 @@ class TrustAuthorityResolverLive(
     }
 }
 
+private fun trustedListLocation(value: String): Either<TrustAuthorityResolutionError.TrustedListFetchFailed, URL> =
+    Either.catch {
+        val uri = URI(value)
+        require(uri.scheme == "https") { "trusted list location must use https" }
+        require(uri.userInfo == null) { "trusted list location must not include userinfo" }
+        require(!uri.host.isNullOrBlank()) { "trusted list location must include a host" }
+        require(InetAddress.getAllByName(uri.host).none(InetAddress::isLocalAddress)) {
+            "trusted list location must not resolve to a local address"
+        }
+        uri.toURL()
+    }.mapLeft { error ->
+        TrustAuthorityResolutionError.TrustedListFetchFailed(error.message)
+    }
+
 private fun List<X5CShouldBe>.toTrustPolicy(): X5CShouldBe? =
     when (val policies = toNonEmptyListOrNull()) {
         null -> null
@@ -127,3 +116,6 @@ private fun List<X5CShouldBe>.toTrustPolicy(): X5CShouldBe? =
 
 private fun NonEmptyList<X5CShouldBe>.toTrustPolicy(): X5CShouldBe =
     if (size == 1) head else X5CShouldBe.OneOf(this)
+
+private fun InetAddress.isLocalAddress(): Boolean =
+    isAnyLocalAddress || isLoopbackAddress || isLinkLocalAddress || isSiteLocalAddress || isMulticastAddress

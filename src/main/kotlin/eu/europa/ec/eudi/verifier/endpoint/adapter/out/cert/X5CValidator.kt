@@ -140,8 +140,10 @@ class X5CValidator(private val x5CShouldBe: X5CShouldBe) {
     fun trustedOrThrow(chain: Nel<X509Certificate>) {
         when (x5CShouldBe) {
             X5CShouldBe.Ignored -> Unit // Do nothing
-            is X5CShouldBe.AuthorityKeyIdentifier -> trustedOrThrow(chain, x5CShouldBe)
-            is X5CShouldBe.OpenIdFederation -> trustedOrThrow(chain, x5CShouldBe)
+            is X5CShouldBe.AuthorityKeyIdentifier ->
+                throw CertPathValidatorException("AuthorityKeyIdentifier trust policy is unsupported")
+            is X5CShouldBe.OpenIdFederation ->
+                throw CertPathValidatorException("OpenID Federation trust policy is unsupported")
             is X5CShouldBe.OneOf -> trustedOrThrow(chain, x5CShouldBe)
             is X5CShouldBe.Trusted -> {
                 trustedOrThrow(chain, x5CShouldBe)

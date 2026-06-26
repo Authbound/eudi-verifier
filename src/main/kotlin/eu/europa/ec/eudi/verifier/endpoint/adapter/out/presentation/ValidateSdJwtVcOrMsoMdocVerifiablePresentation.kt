@@ -303,7 +303,7 @@ private fun TrustAuthorityResolutionError.toWalletResponseValidationError(
 
         is TrustAuthorityResolutionError.TrustedListFetchFailed ->
             WalletResponseValidationError.InvalidVpToken(
-                "Credential query '${queryId.value}' failed to fetch trusted list '${location}'" +
+                "Credential query '${queryId.value}' failed to fetch trusted list" +
                     (message?.let { ": $it" } ?: ""),
             )
     }
