@@ -25,6 +25,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.net.InetAddress
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -39,7 +40,7 @@ class FetchOpenIdFederationEntityConfigurationHttp(
 
     override fun invoke(entityId: String): Either<Throwable, OpenIdFederationEntityConfiguration> =
         Either.catch {
-            val wellKnown = URI("${entityId.removeSuffix("/")}/.well-known/openid-federation")
+            val wellKnown = openIdFederationWellKnownUri(entityId)
             val request = HttpRequest.newBuilder(wellKnown)
                 .timeout(Duration.ofSeconds(10))
                 .GET()
@@ -65,6 +66,17 @@ class FetchOpenIdFederationEntityConfigurationHttp(
         }
     }
 
+    private fun openIdFederationWellKnownUri(entityId: String): URI {
+        val entityUri = URI(entityId.removeSuffix("/"))
+        require(entityUri.scheme == "https") { "OpenID Federation entity id must use https" }
+        require(entityUri.userInfo == null) { "OpenID Federation entity id must not include userinfo" }
+        require(!entityUri.host.isNullOrBlank()) { "OpenID Federation entity id must include a host" }
+        require(InetAddress.getAllByName(entityUri.host).none(InetAddress::isLocalAddress)) {
+            "OpenID Federation entity id must not resolve to a local address"
+        }
+        return URI("${entityUri.toASCIIString()}/.well-known/openid-federation")
+    }
+
     private fun parseEntityStatementJwt(jwt: String): OpenIdFederationEntityConfiguration {
         val claims = SignedJWT.parse(jwt).jwtClaimsSet
         return OpenIdFederationEntityConfiguration(
@@ -86,3 +98,6 @@ class FetchOpenIdFederationEntityConfigurationHttp(
         private val json = Json { ignoreUnknownKeys = true }
     }
 }
+
+private fun InetAddress.isLocalAddress(): Boolean =
+    isAnyLocalAddress || isLoopbackAddress || isLinkLocalAddress || isSiteLocalAddress || isMulticastAddress
