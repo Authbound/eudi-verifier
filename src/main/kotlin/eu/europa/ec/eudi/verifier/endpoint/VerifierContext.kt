@@ -353,12 +353,7 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
     if (env.getProperty("verifier.validation.sdJwtVc.statusCheck.enabled", true)) {
         log.info("Enabling Status List Token validations")
         registerBean<StatusListTokenValidator> {
-            val selfSignedProfileActive = env.activeProfiles.contains("self-signed")
-            val httpClient = if (selfSignedProfileActive) {
-                createHttpClient(withJsonContentNegotiation = false, trustSelfSigned = true, httpProxy = proxy)
-            } else {
-                createHttpClient(withJsonContentNegotiation = false, trustSelfSigned = false, httpProxy = proxy)
-            }
+            val httpClient = bean<HttpClient>()
             val trustSources = bean<TrustSources>()
             val cache = when (persistenceMode) {
                 PersistenceModeEnum.Redis -> StatusListTokenRedisCache(bean(), bean())

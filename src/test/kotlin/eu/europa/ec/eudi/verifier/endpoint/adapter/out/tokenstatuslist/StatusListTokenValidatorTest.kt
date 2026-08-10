@@ -20,11 +20,13 @@ import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.JWSHeader
 import com.nimbusds.jose.crypto.ECDSASigner
 import com.nimbusds.jose.jwk.Curve
+import com.nimbusds.jose.jwk.ECKey
 import com.nimbusds.jose.jwk.KeyUse
 import com.nimbusds.jose.jwk.gen.ECKeyGenerator
 import com.nimbusds.jose.util.Base64
 import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.SignedJWT
+import com.sun.net.httpserver.HttpServer
 import eu.europa.ec.eudi.sdjwt.SdJwt
 import eu.europa.ec.eudi.sdjwt.SdJwtAndKbJwt
 import eu.europa.ec.eudi.sdjwt.SdJwtVcSpec
@@ -33,6 +35,7 @@ import eu.europa.ec.eudi.statium.PositiveDurationAsSeconds
 import eu.europa.ec.eudi.statium.StatusList
 import eu.europa.ec.eudi.statium.StatusListTokenClaims
 import eu.europa.ec.eudi.statium.TokenStatusListSpec
+import eu.europa.ec.eudi.verifier.endpoint.VerifierApplicationTest
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.CertOps
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.CertOps.toCertificate
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.ProvideTrustSource
@@ -60,7 +63,13 @@ import org.bouncycastle.asn1.x500.X500Name
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.fail
 import org.junit.jupiter.api.Test
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.test.context.TestConfiguration
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Primary
+import org.springframework.test.context.TestPropertySource
 import java.io.ByteArrayOutputStream
+import java.net.InetSocketAddress
 import java.security.KeyPair
 import java.security.cert.X509Certificate
 import java.time.Instant
@@ -68,7 +77,42 @@ import java.time.temporal.ChronoUnit
 import java.util.zip.DeflaterOutputStream
 import kotlin.time.Duration.Companion.hours
 
+@VerifierApplicationTest([StatusListTokenValidatorTest.Config::class])
+@TestPropertySource(
+    properties = [
+        "verifier.issuerMetadata.allowedIssuerPatterns[0]=http://127\\.0\\.0\\.1:.*",
+    ],
+)
 class StatusListTokenValidatorTest {
+
+    @TestConfiguration
+    internal class Config {
+
+        @Bean
+        @Primary
+        fun publishPresentationEvent(): PublishPresentationEvent = PublishPresentationEvent { }
+    }
+
+    @Autowired
+    private lateinit var wiredValidator: StatusListTokenValidator
+
+    @Test
+    fun `wired status validator decodes issuer metadata for tokens without x5c`() = runTest {
+        val signingKey = ECKeyGenerator(Curve.P_256)
+            .keyUse(KeyUse.SIGNATURE)
+            .keyID("issuer-key-1")
+            .generate()
+        val issuerServer = startIssuerServer(signingKey)
+
+        try {
+            wiredValidator.validate(
+                credentialWithStatusReference(issuerServer.statusListUri),
+                TransactionId("tx"),
+            )
+        } finally {
+            issuerServer.server.stop(0)
+        }
+    }
 
     @Test
     fun `missing status list reference fails validation`() = runTest {
@@ -365,6 +409,51 @@ private fun metadataHttpClient(
 
 private fun Job.containsDescendant(candidate: Job): Boolean =
     this === candidate || children.any { it.containsDescendant(candidate) }
+
+private data class IssuerServer(
+    val server: HttpServer,
+    val statusListUri: String,
+)
+
+private data class IssuerResponse(
+    val body: String,
+    val contentType: String,
+)
+
+private fun startIssuerServer(signingKey: ECKey): IssuerServer {
+    val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+    val baseUrl = "http://127.0.0.1:${server.address.port}"
+    val issuer = "$baseUrl/api/v1/openid4vci"
+    val statusListUri = "$issuer/status-lists/pension"
+    val responses = mapOf(
+        "/.well-known/jwt-vc-issuer/api/v1/openid4vci" to IssuerResponse(
+            body = """{"issuer":"$issuer","jwks_uri":"$baseUrl/public_keys.jwks"}""",
+            contentType = ContentType.Application.Json.toString(),
+        ),
+        "/public_keys.jwks" to IssuerResponse(
+            body = signingKey.toPublicJWK().toPublicJWKSetJson(),
+            contentType = ContentType.Application.Json.toString(),
+        ),
+        "/api/v1/openid4vci/status-lists/pension" to IssuerResponse(
+            body = buildStatusListToken(issuer, statusListUri, signingKey),
+            contentType = "application/statuslist+jwt",
+        ),
+    )
+    server.createContext("/") { exchange ->
+        val response = responses[exchange.requestURI.path]
+        if (response == null) {
+            exchange.sendResponseHeaders(404, -1)
+            exchange.close()
+        } else {
+            val bytes = response.body.toByteArray()
+            exchange.responseHeaders.set(HttpHeaders.ContentType, response.contentType)
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+    }
+    server.start()
+    return IssuerServer(server, statusListUri)
+}
 
 private fun buildStatusListToken(
     issuer: String,
