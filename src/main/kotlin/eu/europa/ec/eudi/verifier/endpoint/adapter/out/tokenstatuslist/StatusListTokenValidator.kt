@@ -18,8 +18,8 @@ package eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist
 import arrow.core.raise.catch
 import arrow.core.toNonEmptyListOrNull
 import com.nimbusds.jose.crypto.factories.DefaultJWSVerifierFactory
-import com.nimbusds.jwt.SignedJWT
 import com.nimbusds.jose.util.Base64
+import com.nimbusds.jwt.SignedJWT
 import eu.europa.ec.eudi.sdjwt.SdJwtAndKbJwt
 import eu.europa.ec.eudi.sdjwt.SdJwtVcSpec
 import eu.europa.ec.eudi.statium.GetStatus
@@ -27,12 +27,12 @@ import eu.europa.ec.eudi.statium.GetStatusListToken
 import eu.europa.ec.eudi.statium.Status
 import eu.europa.ec.eudi.statium.StatusListTokenClaims
 import eu.europa.ec.eudi.statium.StatusReference
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.tokenStatusListReference
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.statusReference
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.ProvideTrustSource
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.issuer.IssuerMetadataJwkSetResolver
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.tokenStatusListReference
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.sdjwtvc.statusReference
 import eu.europa.ec.eudi.verifier.endpoint.domain.Clock
 import eu.europa.ec.eudi.verifier.endpoint.domain.Clock.Companion.asKotlinClock
 import eu.europa.ec.eudi.verifier.endpoint.domain.TransactionId
@@ -44,7 +44,6 @@ import io.ktor.http.Url
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.Date
-import kotlinx.coroutines.runBlocking
 import kotlin.time.Instant
 import kotlin.time.toJavaInstant
 
@@ -130,7 +129,7 @@ class StatusListTokenValidator(
         throw StatusCheckException(message, error)
     }
 
-    private fun verifyStatusListTokenSignature(
+    private suspend fun verifyStatusListTokenSignature(
         statusListToken: String,
         at: Instant,
         x5cShouldBe: X5CShouldBe?,
@@ -139,7 +138,7 @@ class StatusListTokenValidator(
         val x5c = signedJwt.header.x509CertChain?.map(::decodeCertificate)?.toNonEmptyListOrNull()
         when {
             x5c != null -> verifyStatusListTokenWithX5c(signedJwt, x5c, at, x5cShouldBe)
-            else -> runBlocking { verifyStatusListTokenWithIssuerMetadata(signedJwt) }
+            else -> verifyStatusListTokenWithIssuerMetadata(signedJwt)
         }
     }
 

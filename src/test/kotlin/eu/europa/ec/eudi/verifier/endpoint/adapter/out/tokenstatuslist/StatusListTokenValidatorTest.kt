@@ -19,10 +19,10 @@ import com.nimbusds.jose.JOSEObjectType
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.JWSHeader
 import com.nimbusds.jose.crypto.ECDSASigner
-import com.nimbusds.jose.util.Base64
 import com.nimbusds.jose.jwk.Curve
 import com.nimbusds.jose.jwk.KeyUse
 import com.nimbusds.jose.jwk.gen.ECKeyGenerator
+import com.nimbusds.jose.util.Base64
 import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.SignedJWT
 import eu.europa.ec.eudi.sdjwt.SdJwt
@@ -46,24 +46,27 @@ import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.PublishPresentat
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
+import io.ktor.client.plugins.api.createClientPlugin
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.fullPath
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.test.runTest
+import org.bouncycastle.asn1.x500.X500Name
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.fail
 import org.junit.jupiter.api.Test
-import java.time.Instant
-import java.time.temporal.ChronoUnit
 import java.io.ByteArrayOutputStream
 import java.security.KeyPair
 import java.security.cert.X509Certificate
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 import java.util.zip.DeflaterOutputStream
 import kotlin.time.Duration.Companion.hours
-import org.bouncycastle.asn1.x500.X500Name
 
 class StatusListTokenValidatorTest {
 
@@ -136,6 +139,43 @@ class StatusListTokenValidatorTest {
         val sdJwtAndKbJwt = credentialWithStatusReference(statusListUri)
 
         validator.validate(sdJwtAndKbJwt, TransactionId("tx"))
+    }
+
+    @Test
+    fun `issuer metadata resolution preserves the validation coroutine context`() = runTest {
+        val issuer = "https://issuer.example/api/v1/openid4vci"
+        val statusListUri = "$issuer/status-lists/pension"
+        val signingKey = ECKeyGenerator(Curve.P_256)
+            .keyUse(KeyUse.SIGNATURE)
+            .keyID("issuer-key-1")
+            .generate()
+        val validationJob = currentCoroutineContext()[Job] ?: error("Missing validation job")
+        val httpClient = metadataHttpClient(
+            paths = mapOf(
+                "/.well-known/jwt-vc-issuer/api/v1/openid4vci" to
+                    """{"issuer":"$issuer","jwks_uri":"https://issuer.example/public_keys.jwks"}""",
+                "/public_keys.jwks" to signingKey.toPublicJWK().toPublicJWKSetJson(),
+                "/api/v1/openid4vci/status-lists/pension" to buildStatusListToken(issuer, statusListUri, signingKey),
+            ),
+            beforeRequest = { requestJob ->
+                check(validationJob.containsDescendant(requestJob)) {
+                    "Status validation lost its coroutine context before an HTTP request"
+                }
+            },
+        )
+        val validator = StatusListTokenValidator(
+            httpClient = httpClient,
+            issuerMetadataJwkSetResolver = IssuerMetadataJwkSetResolver(
+                httpClient,
+                IssuerMetadataTrustPolicy(setOf(Regex("https://issuer\\.example/.*"))),
+            ),
+            clock = Clock.System,
+            publishPresentationEvent = PublishPresentationEvent { },
+            provideTrustSource = ProvideTrustSource.forAll(X5CShouldBe.Ignored),
+            cache = NoopStatusListTokenCache,
+        )
+
+        validator.validate(credentialWithStatusReference(statusListUri), TransactionId("tx"))
     }
 
     @Test
@@ -297,8 +337,16 @@ private fun credentialWithStatusReference(statusListUri: String, index: Int = 0)
     return SdJwtAndKbJwt(SdJwt(jwt, emptyList()), jwt)
 }
 
-private fun metadataHttpClient(paths: Map<String, String>): HttpClient =
-    HttpClient(
+private fun metadataHttpClient(
+    paths: Map<String, String>,
+    beforeRequest: (Job) -> Unit = { },
+): HttpClient {
+    val observeRequestContext = createClientPlugin("ObserveRequestContext") {
+        onRequest { _, _ ->
+            beforeRequest(currentCoroutineContext()[Job] ?: error("Missing request job"))
+        }
+    }
+    return HttpClient(
         MockEngine { request ->
             val body = paths[request.url.fullPath] ?: error("Unexpected request ${request.url}")
             respond(
@@ -308,10 +356,15 @@ private fun metadataHttpClient(paths: Map<String, String>): HttpClient =
             )
         },
     ) {
+        install(observeRequestContext)
         install(ContentNegotiation) {
             json(jsonSupport)
         }
     }
+}
+
+private fun Job.containsDescendant(candidate: Job): Boolean =
+    this === candidate || children.any { it.containsDescendant(candidate) }
 
 private fun buildStatusListToken(
     issuer: String,
