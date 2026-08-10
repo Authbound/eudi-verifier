@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+// Modifications Copyright (c) 2026 Authbound
 package eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist
 
 import arrow.core.raise.catch
@@ -44,6 +45,7 @@ import io.ktor.http.Url
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.Date
+import java.util.concurrent.CancellationException
 import kotlin.time.Instant
 import kotlin.time.toJavaInstant
 
@@ -133,14 +135,20 @@ class StatusListTokenValidator(
         statusListToken: String,
         at: Instant,
         x5cShouldBe: X5CShouldBe?,
-    ): Result<Unit> = runCatching {
-        val signedJwt = SignedJWT.parse(statusListToken)
-        val x5c = signedJwt.header.x509CertChain?.map(::decodeCertificate)?.toNonEmptyListOrNull()
-        when {
-            x5c != null -> verifyStatusListTokenWithX5c(signedJwt, x5c, at, x5cShouldBe)
-            else -> verifyStatusListTokenWithIssuerMetadata(signedJwt)
+    ): Result<Unit> =
+        try {
+            val signedJwt = SignedJWT.parse(statusListToken)
+            val x5c = signedJwt.header.x509CertChain?.map(::decodeCertificate)?.toNonEmptyListOrNull()
+            when {
+                x5c != null -> verifyStatusListTokenWithX5c(signedJwt, x5c, at, x5cShouldBe)
+                else -> verifyStatusListTokenWithIssuerMetadata(signedJwt)
+            }
+            Result.success(Unit)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Result.failure(error)
         }
-    }
 
     private fun verifyStatusListTokenWithX5c(
         signedJwt: SignedJWT,

@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+// Modifications Copyright (c) 2026 Authbound
 package eu.europa.ec.eudi.verifier.endpoint
 
 import arrow.core.*

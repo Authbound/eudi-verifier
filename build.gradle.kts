@@ -155,7 +155,10 @@ spotless {
     val ktlintVersion = libs.versions.ktlintVersion.get()
     kotlin {
         ktlint(ktlintVersion)
-        licenseHeaderFile("FileHeader.txt")
+        licenseHeaderFile(
+            "FileHeader.txt",
+            "(?:package |@file:|// Modifications Copyright \\(c\\) 2026 Authbound)",
+        )
     }
     kotlinGradle {
         ktlint(ktlintVersion)
