@@ -13,18 +13,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+// Modifications Copyright (c) 2026 Authbound
 package eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist
 
 import com.nimbusds.jose.JOSEObjectType
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.JWSHeader
 import com.nimbusds.jose.crypto.ECDSASigner
-import com.nimbusds.jose.util.Base64
 import com.nimbusds.jose.jwk.Curve
+import com.nimbusds.jose.jwk.ECKey
 import com.nimbusds.jose.jwk.KeyUse
 import com.nimbusds.jose.jwk.gen.ECKeyGenerator
+import com.nimbusds.jose.util.Base64
 import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.SignedJWT
+import com.sun.net.httpserver.HttpServer
 import eu.europa.ec.eudi.sdjwt.SdJwt
 import eu.europa.ec.eudi.sdjwt.SdJwtAndKbJwt
 import eu.europa.ec.eudi.sdjwt.SdJwtVcSpec
@@ -33,6 +36,7 @@ import eu.europa.ec.eudi.statium.PositiveDurationAsSeconds
 import eu.europa.ec.eudi.statium.StatusList
 import eu.europa.ec.eudi.statium.StatusListTokenClaims
 import eu.europa.ec.eudi.statium.TokenStatusListSpec
+import eu.europa.ec.eudi.verifier.endpoint.VerifierApplicationTest
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.CertOps
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.CertOps.toCertificate
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.ProvideTrustSource
@@ -42,30 +46,78 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.issuer.IssuerMetadataTrus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.json.jsonSupport
 import eu.europa.ec.eudi.verifier.endpoint.domain.Clock
 import eu.europa.ec.eudi.verifier.endpoint.domain.TransactionId
+import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.PresentationEvent
 import eu.europa.ec.eudi.verifier.endpoint.port.out.persistence.PublishPresentationEvent
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
+import io.ktor.client.plugins.api.createClientPlugin
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.fullPath
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.test.runTest
+import org.bouncycastle.asn1.x500.X500Name
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertInstanceOf
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.fail
 import org.junit.jupiter.api.Test
-import java.time.Instant
-import java.time.temporal.ChronoUnit
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.test.context.TestConfiguration
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Primary
+import org.springframework.test.context.TestPropertySource
 import java.io.ByteArrayOutputStream
+import java.net.InetSocketAddress
 import java.security.KeyPair
 import java.security.cert.X509Certificate
+import java.time.Instant
+import java.time.temporal.ChronoUnit
+import java.util.concurrent.CancellationException
 import java.util.zip.DeflaterOutputStream
 import kotlin.time.Duration.Companion.hours
-import org.bouncycastle.asn1.x500.X500Name
 
+@VerifierApplicationTest([StatusListTokenValidatorTest.Config::class])
+@TestPropertySource(
+    properties = [
+        "verifier.issuerMetadata.allowedIssuerPatterns[0]=http://127\\.0\\.0\\.1:.*",
+    ],
+)
 class StatusListTokenValidatorTest {
+
+    @TestConfiguration
+    internal class Config {
+
+        @Bean
+        @Primary
+        fun publishPresentationEvent(): PublishPresentationEvent = PublishPresentationEvent { }
+    }
+
+    @Autowired
+    private lateinit var wiredValidator: StatusListTokenValidator
+
+    @Test
+    fun `wired status validator decodes issuer metadata for tokens without x5c`() = runTest {
+        val signingKey = ECKeyGenerator(Curve.P_256)
+            .keyUse(KeyUse.SIGNATURE)
+            .keyID("issuer-key-1")
+            .generate()
+        val issuerServer = startIssuerServer(signingKey)
+
+        try {
+            wiredValidator.validate(
+                credentialWithStatusReference(issuerServer.statusListUri),
+                TransactionId("tx"),
+            )
+        } finally {
+            issuerServer.server.stop(0)
+        }
+    }
 
     @Test
     fun `missing status list reference fails validation`() = runTest {
@@ -136,6 +188,166 @@ class StatusListTokenValidatorTest {
         val sdJwtAndKbJwt = credentialWithStatusReference(statusListUri)
 
         validator.validate(sdJwtAndKbJwt, TransactionId("tx"))
+    }
+
+    @Test
+    fun `issuer metadata resolution preserves the validation coroutine context`() = runTest {
+        val issuer = "https://issuer.example/api/v1/openid4vci"
+        val statusListUri = "$issuer/status-lists/pension"
+        val signingKey = ECKeyGenerator(Curve.P_256)
+            .keyUse(KeyUse.SIGNATURE)
+            .keyID("issuer-key-1")
+            .generate()
+        val validationJob = currentCoroutineContext()[Job] ?: error("Missing validation job")
+        val httpClient = metadataHttpClient(
+            paths = mapOf(
+                "/.well-known/jwt-vc-issuer/api/v1/openid4vci" to
+                    """{"issuer":"$issuer","jwks_uri":"https://issuer.example/public_keys.jwks"}""",
+                "/public_keys.jwks" to signingKey.toPublicJWK().toPublicJWKSetJson(),
+                "/api/v1/openid4vci/status-lists/pension" to buildStatusListToken(issuer, statusListUri, signingKey),
+            ),
+            beforeRequest = { requestJob, _ ->
+                check(validationJob.containsDescendant(requestJob)) {
+                    "Status validation lost its coroutine context before an HTTP request"
+                }
+            },
+        )
+        val validator = StatusListTokenValidator(
+            httpClient = httpClient,
+            issuerMetadataJwkSetResolver = IssuerMetadataJwkSetResolver(
+                httpClient,
+                IssuerMetadataTrustPolicy(setOf(Regex("https://issuer\\.example/.*"))),
+            ),
+            clock = Clock.System,
+            publishPresentationEvent = PublishPresentationEvent { },
+            provideTrustSource = ProvideTrustSource.forAll(X5CShouldBe.Ignored),
+            cache = NoopStatusListTokenCache,
+        )
+
+        validator.validate(credentialWithStatusReference(statusListUri), TransactionId("tx"))
+    }
+
+    @Test
+    fun `issuer metadata cancellation propagates without becoming a status failure`() = runTest {
+        val issuer = "https://issuer.example/api/v1/openid4vci"
+        val statusListUri = "$issuer/status-lists/pension"
+        val signingKey = ECKeyGenerator(Curve.P_256)
+            .keyUse(KeyUse.SIGNATURE)
+            .keyID("issuer-key-1")
+            .generate()
+        val statusListJwt = buildStatusListToken(issuer, statusListUri, signingKey)
+        val httpClient = metadataHttpClient(
+            paths = mapOf("/api/v1/openid4vci/status-lists/pension" to statusListJwt),
+            beforeRequest = { _, path ->
+                if (path.startsWith("/.well-known/")) {
+                    throw CancellationException("issuer metadata request cancelled")
+                }
+            },
+        )
+        val validator = StatusListTokenValidator(
+            httpClient = httpClient,
+            issuerMetadataJwkSetResolver = IssuerMetadataJwkSetResolver(
+                httpClient,
+                IssuerMetadataTrustPolicy(setOf(Regex("https://issuer\\.example/.*"))),
+            ),
+            clock = Clock.System,
+            publishPresentationEvent = PublishPresentationEvent { },
+            provideTrustSource = ProvideTrustSource.forAll(X5CShouldBe.Ignored),
+            cache = NoopStatusListTokenCache,
+        )
+
+        val error = try {
+            validator.validate(credentialWithStatusReference(statusListUri), TransactionId("tx"))
+            fail("Expected CancellationException")
+        } catch (error: CancellationException) {
+            error
+        }
+
+        assertEquals("issuer metadata request cancelled", error.message)
+    }
+
+    @Test
+    fun `issuer metadata failure preserves its cause and publishes only a failed event`() = runTest {
+        val issuer = "https://issuer.example/api/v1/openid4vci"
+        val statusListUri = "$issuer/status-lists/pension"
+        val signingKey = ECKeyGenerator(Curve.P_256)
+            .keyUse(KeyUse.SIGNATURE)
+            .keyID("issuer-key-1")
+            .generate()
+        val events = mutableListOf<PresentationEvent>()
+        val httpClient = metadataHttpClient(
+            paths = mapOf(
+                "/api/v1/openid4vci/status-lists/pension" to buildStatusListToken(issuer, statusListUri, signingKey),
+            ),
+            beforeRequest = { _, path ->
+                if (path.startsWith("/.well-known/")) {
+                    error("issuer metadata unavailable")
+                }
+            },
+        )
+        val validator = StatusListTokenValidator(
+            httpClient = httpClient,
+            issuerMetadataJwkSetResolver = IssuerMetadataJwkSetResolver(
+                httpClient,
+                IssuerMetadataTrustPolicy(setOf(Regex("https://issuer\\.example/.*"))),
+            ),
+            clock = Clock.System,
+            publishPresentationEvent = PublishPresentationEvent(events::add),
+            provideTrustSource = ProvideTrustSource.forAll(X5CShouldBe.Ignored),
+            cache = NoopStatusListTokenCache,
+        )
+
+        val validationError = expectStatusCheckFailure(validator, statusListUri)
+        val failedEvent = assertInstanceOf(PresentationEvent.AttestationStatusCheckFailed::class.java, events.single())
+
+        assertCauseChainContains(validationError, "Unable to resolve SD-JWT VC issuer metadata")
+        assertTrue(
+            failedEvent.cause?.contains("Invalid JWT signature") == true,
+            "Expected failure event cause to identify signature validation, got '${failedEvent.cause}'",
+        )
+    }
+
+    @Test
+    fun `invalid issuer signature preserves its cause and publishes only a failed event`() = runTest {
+        val issuer = "https://issuer.example/api/v1/openid4vci"
+        val statusListUri = "$issuer/status-lists/pension"
+        val signingKey = ECKeyGenerator(Curve.P_256)
+            .keyUse(KeyUse.SIGNATURE)
+            .keyID("issuer-key-1")
+            .generate()
+        val unrelatedKey = ECKeyGenerator(Curve.P_256)
+            .keyUse(KeyUse.SIGNATURE)
+            .keyID("issuer-key-1")
+            .generate()
+        val events = mutableListOf<PresentationEvent>()
+        val httpClient = metadataHttpClient(
+            mapOf(
+                "/.well-known/jwt-vc-issuer/api/v1/openid4vci" to
+                    """{"issuer":"$issuer","jwks_uri":"https://issuer.example/public_keys.jwks"}""",
+                "/public_keys.jwks" to unrelatedKey.toPublicJWK().toPublicJWKSetJson(),
+                "/api/v1/openid4vci/status-lists/pension" to buildStatusListToken(issuer, statusListUri, signingKey),
+            ),
+        )
+        val validator = StatusListTokenValidator(
+            httpClient = httpClient,
+            issuerMetadataJwkSetResolver = IssuerMetadataJwkSetResolver(
+                httpClient,
+                IssuerMetadataTrustPolicy(setOf(Regex("https://issuer\\.example/.*"))),
+            ),
+            clock = Clock.System,
+            publishPresentationEvent = PublishPresentationEvent(events::add),
+            provideTrustSource = ProvideTrustSource.forAll(X5CShouldBe.Ignored),
+            cache = NoopStatusListTokenCache,
+        )
+
+        val validationError = expectStatusCheckFailure(validator, statusListUri)
+        val failedEvent = assertInstanceOf(PresentationEvent.AttestationStatusCheckFailed::class.java, events.single())
+
+        assertCauseChainContains(validationError, "Invalid JWT signature")
+        assertTrue(
+            failedEvent.cause?.contains("Invalid JWT signature") == true,
+            "Expected failure event cause to preserve signature error, got '${failedEvent.cause}'",
+        )
     }
 
     @Test
@@ -278,6 +490,25 @@ class StatusListTokenValidatorTest {
     }
 }
 
+private suspend fun expectStatusCheckFailure(
+    validator: StatusListTokenValidator,
+    statusListUri: String,
+): StatusCheckException =
+    try {
+        validator.validate(credentialWithStatusReference(statusListUri), TransactionId("tx"))
+        fail("Expected StatusCheckException")
+    } catch (error: StatusCheckException) {
+        error
+    }
+
+private fun assertCauseChainContains(error: Throwable, expectedMessage: String) {
+    val causeMessages = generateSequence(error) { it.cause }.mapNotNull { it.message }.toList()
+    assertTrue(
+        causeMessages.any { it.contains(expectedMessage) },
+        "Expected cause chain to contain '$expectedMessage', got $causeMessages",
+    )
+}
+
 private fun credentialWithStatusReference(statusListUri: String, index: Int = 0): SdJwtAndKbJwt<SignedJWT> {
     val jwt = SignedJWT(
         JWSHeader.Builder(JWSAlgorithm.ES256).build(),
@@ -297,8 +528,19 @@ private fun credentialWithStatusReference(statusListUri: String, index: Int = 0)
     return SdJwtAndKbJwt(SdJwt(jwt, emptyList()), jwt)
 }
 
-private fun metadataHttpClient(paths: Map<String, String>): HttpClient =
-    HttpClient(
+private fun metadataHttpClient(
+    paths: Map<String, String>,
+    beforeRequest: (Job, String) -> Unit = { _, _ -> },
+): HttpClient {
+    val observeRequestContext = createClientPlugin("ObserveRequestContext") {
+        onRequest { request, _ ->
+            beforeRequest(
+                currentCoroutineContext()[Job] ?: error("Missing request job"),
+                request.url.build().fullPath,
+            )
+        }
+    }
+    return HttpClient(
         MockEngine { request ->
             val body = paths[request.url.fullPath] ?: error("Unexpected request ${request.url}")
             respond(
@@ -308,10 +550,60 @@ private fun metadataHttpClient(paths: Map<String, String>): HttpClient =
             )
         },
     ) {
+        install(observeRequestContext)
         install(ContentNegotiation) {
             json(jsonSupport)
         }
     }
+}
+
+private fun Job.containsDescendant(candidate: Job): Boolean =
+    this === candidate || children.any { it.containsDescendant(candidate) }
+
+private data class IssuerServer(
+    val server: HttpServer,
+    val statusListUri: String,
+)
+
+private data class IssuerResponse(
+    val body: String,
+    val contentType: String,
+)
+
+private fun startIssuerServer(signingKey: ECKey): IssuerServer {
+    val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+    val baseUrl = "http://127.0.0.1:${server.address.port}"
+    val issuer = "$baseUrl/api/v1/openid4vci"
+    val statusListUri = "$issuer/status-lists/pension"
+    val responses = mapOf(
+        "/.well-known/jwt-vc-issuer/api/v1/openid4vci" to IssuerResponse(
+            body = """{"issuer":"$issuer","jwks_uri":"$baseUrl/public_keys.jwks"}""",
+            contentType = ContentType.Application.Json.toString(),
+        ),
+        "/public_keys.jwks" to IssuerResponse(
+            body = signingKey.toPublicJWK().toPublicJWKSetJson(),
+            contentType = ContentType.Application.Json.toString(),
+        ),
+        "/api/v1/openid4vci/status-lists/pension" to IssuerResponse(
+            body = buildStatusListToken(issuer, statusListUri, signingKey),
+            contentType = "application/statuslist+jwt",
+        ),
+    )
+    server.createContext("/") { exchange ->
+        val response = responses[exchange.requestURI.path]
+        if (response == null) {
+            exchange.sendResponseHeaders(404, -1)
+            exchange.close()
+        } else {
+            val bytes = response.body.toByteArray()
+            exchange.responseHeaders.set(HttpHeaders.ContentType, response.contentType)
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+    }
+    server.start()
+    return IssuerServer(server, statusListUri)
+}
 
 private fun buildStatusListToken(
     issuer: String,
