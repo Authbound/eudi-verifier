@@ -146,12 +146,12 @@ class X5CValidatorTest {
     }
 
     @Test
-    fun `authority key identifier policy succeeds when chain contains matching AKI`() {
+    fun `authority key identifier policy fails closed`() {
         val chain = nonEmptyListOf(eeCertificate, trustedCA.caCert)
         val expectedAki = eeCertificate.authorityKeyIdentifierBase64Url()
         val validator = X5CValidator(X5CShouldBe.AuthorityKeyIdentifier(nonEmptyListOf(expectedAki)))
 
-        assertDoesNotThrow { validator.trustedOrThrow(chain) }
+        assertThrows<CertPathValidatorException> { validator.trustedOrThrow(chain) }
     }
 
     @Test
@@ -165,7 +165,7 @@ class X5CValidatorTest {
     }
 
     @Test
-    fun `openid federation policy succeeds when leaf entity hints configured trust anchor`() {
+    fun `openid federation policy fails closed`() {
         val chain = nonEmptyListOf(eeCertificate, trustedCA.caCert)
         val validator = X5CValidator(
             X5CShouldBe.OpenIdFederation(
@@ -181,7 +181,7 @@ class X5CValidatorTest {
             ),
         )
 
-        assertDoesNotThrow { validator.trustedOrThrow(chain) }
+        assertThrows<CertPathValidatorException> { validator.trustedOrThrow(chain) }
     }
 
     @Test
