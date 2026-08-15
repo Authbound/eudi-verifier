@@ -19,11 +19,30 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.utils.getOrThrow
 import eu.europa.ec.eudi.verifier.endpoint.domain.TrustedListConfig
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
+import java.io.File
 import java.net.URI
 import java.security.KeyStore
 
 class FetchLOTLCertificatesDSSTest {
+
+    @Test
+    fun `temporary LOTL cache is deleted when refresh fails`() {
+        lateinit var cacheDirectory: File
+
+        assertThrows(IllegalStateException::class.java) {
+            withTemporaryLotlCache { directory ->
+                cacheDirectory = directory
+                directory.resolve("cached.xml").writeText("cached")
+                error("refresh failed")
+            }
+        }
+
+        assertFalse(cacheDirectory.exists())
+    }
 
     // @Test
     fun `get certs`() = runTest {

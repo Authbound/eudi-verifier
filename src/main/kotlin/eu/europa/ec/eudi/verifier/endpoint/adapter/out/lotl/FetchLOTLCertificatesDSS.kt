@@ -37,6 +37,7 @@ import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.DisposableBean
 import org.springframework.core.io.DefaultResourceLoader
+import java.io.File
 import java.nio.file.Files
 import java.security.cert.X509Certificate
 import java.util.concurrent.ExecutorService
@@ -58,50 +59,50 @@ class FetchLOTLCertificatesDSS(
     override suspend fun invoke(
         trustedListConfig: TrustedListConfig,
     ): Either<Throwable, List<X509Certificate>> = Either.catch {
-        val trustedListsCertificateSource = TrustedListsCertificateSource()
+        withTemporaryLotlCache { tlCacheDirectory ->
+            val trustedListsCertificateSource = TrustedListsCertificateSource()
 
-        val tlCacheDirectory = Files.createTempDirectory("lotl-cache").toFile()
-
-        val offlineLoader: DSSCacheFileLoader = FileCacheDataLoader().apply {
-            setCacheExpirationTime(24 * 60 * 60 * 1000)
-            setFileCacheDirectory(tlCacheDirectory)
-            dataLoader = IgnoreDataLoader()
-        }
-
-        val onlineLoader: DSSCacheFileLoader = FileCacheDataLoader().apply {
-            setCacheExpirationTime(24 * 60 * 60 * 1000)
-            setFileCacheDirectory(tlCacheDirectory)
-            dataLoader = CommonsDataLoader()
-        }
-
-        val cacheCleaner = CacheCleaner().apply {
-            setCleanMemory(true)
-            setCleanFileSystem(true)
-            setDSSFileLoader(offlineLoader)
-        }
-
-        val validationJob = TLValidationJob().apply {
-            setListOfTrustedListSources(lotlSource(trustedListConfig))
-            setOfflineDataLoader(offlineLoader)
-            setOnlineDataLoader(onlineLoader)
-            setTrustedListCertificateSource(trustedListsCertificateSource)
-            setSynchronizationStrategy(ExpirationAndSignatureCheckStrategy())
-            setCacheCleaner(cacheCleaner)
-            setExecutorService(executorService)
-        }
-
-        logger.info("Starting validation job")
-        val (certs, duration) = measureTimedValue {
-            withContext(dispatcher) {
-                validationJob.onlineRefresh()
+            val offlineLoader: DSSCacheFileLoader = FileCacheDataLoader().apply {
+                setCacheExpirationTime(24 * 60 * 60 * 1000)
+                setFileCacheDirectory(tlCacheDirectory)
+                dataLoader = IgnoreDataLoader()
             }
 
-            trustedListsCertificateSource.certificates.map {
-                it.certificate
+            val onlineLoader: DSSCacheFileLoader = FileCacheDataLoader().apply {
+                setCacheExpirationTime(24 * 60 * 60 * 1000)
+                setFileCacheDirectory(tlCacheDirectory)
+                dataLoader = CommonsDataLoader()
             }
+
+            val cacheCleaner = CacheCleaner().apply {
+                setCleanMemory(true)
+                setCleanFileSystem(true)
+                setDSSFileLoader(offlineLoader)
+            }
+
+            val validationJob = TLValidationJob().apply {
+                setListOfTrustedListSources(lotlSource(trustedListConfig))
+                setOfflineDataLoader(offlineLoader)
+                setOnlineDataLoader(onlineLoader)
+                setTrustedListCertificateSource(trustedListsCertificateSource)
+                setSynchronizationStrategy(ExpirationAndSignatureCheckStrategy())
+                setCacheCleaner(cacheCleaner)
+                setExecutorService(executorService)
+            }
+
+            logger.info("Starting validation job")
+            val (certs, duration) = measureTimedValue {
+                withContext(dispatcher) {
+                    validationJob.onlineRefresh()
+                }
+
+                trustedListsCertificateSource.certificates.map {
+                    it.certificate
+                }
+            }
+            logger.info("Finished validation job in $duration")
+            certs
         }
-        logger.info("Finished validation job in $duration")
-        certs
     }
 
     private suspend fun lotlSource(
@@ -132,4 +133,15 @@ class FetchLOTLCertificatesDSS(
                 )
             }
         }
+}
+
+internal inline fun <T> withTemporaryLotlCache(block: (File) -> T): T {
+    val cacheDirectory = Files.createTempDirectory("lotl-cache").toFile()
+    return try {
+        block(cacheDirectory)
+    } finally {
+        if (!runCatching { cacheDirectory.deleteRecursively() }.getOrDefault(false)) {
+            logger.warn("Failed to delete temporary LOTL cache directory")
+        }
+    }
 }
