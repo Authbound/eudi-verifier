@@ -57,6 +57,7 @@ import eu.europa.ec.eudi.verifier.endpoint.domain.UnresolvedAuthorizationRequest
 import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierAttestation
 import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierAttestationFormat
 import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierConfig
+import eu.europa.ec.eudi.verifier.endpoint.domain.VpFormatsSupported
 import eu.europa.ec.eudi.verifier.endpoint.domain.walletFacing
 import eu.europa.ec.eudi.verifier.endpoint.port.input.InitTransactionTO
 import eu.europa.ec.eudi.verifier.endpoint.domain.toJavaDate
@@ -72,7 +73,9 @@ class CreateJarNimbusTest {
 
     private val createJar = TestContext.createJar
     private val verifier = TestContext.signedRequestObjectVerifier
-    private val clientMetaData = TestContext.clientMetaData
+    private val clientMetaData = TestContext.clientMetaData.copy(
+        vpFormatsSupported = TestContext.clientMetaData.vpFormatsSupported.copy(msoMdoc = VpFormatsSupported.MsoMdoc.Default),
+    )
     private val verifierId = TestContext.verifierId
 
     @Test
@@ -110,7 +113,17 @@ class CreateJarNimbusTest {
 
         assertTrue { claimSet.claims.containsKey("client_metadata") }
         val rawClientMetadata = claimSet.getJSONObjectClaim("client_metadata")
-        assertEquals(rawClientMetadata[OpenId4VPSpec.VP_FORMATS], rawClientMetadata[OpenId4VPSpec.VP_FORMATS_SUPPORTED])
+        assertFalse(rawClientMetadata.containsKey(OpenId4VPSpec.VP_FORMATS))
+        assertEquals(
+            clientMetaData.vpFormatsSupported,
+            claimSet.getJSONObjectClaim("client_metadata").toJsonObject()[OpenId4VPSpec.VP_FORMATS_SUPPORTED]!!
+                .decodeAs<VpFormatsSupported>().getOrThrow(),
+        )
+        assertEquals(
+            clientMetaData.responseEncryptionOption.encryptionMethods.map { it.name }.toList(),
+            rawClientMetadata[OpenId4VPSpec.ENCRYPTED_RESPONSE_ENC_VALUES_SUPPORTED],
+        )
+        assertTrue(signedJwt.verify(verifier))
         val clientMetadata = OIDCClientMetadata.parse(JSONObject(rawClientMetadata))
         assertNull(clientMetadata.jwkSetURI)
         assertEquals(JWKSet(ecKey).toPublicJWKSet(), clientMetadata.jwkSet)
