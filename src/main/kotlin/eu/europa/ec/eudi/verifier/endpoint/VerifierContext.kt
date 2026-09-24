@@ -1367,6 +1367,20 @@ private fun createHttpClient(
             }
         }
         expectSuccess = true
+        HttpResponseValidator {
+            handleResponseExceptionWithRequest { error, request ->
+                val metadataPath = "/.well-known/jwt-vc-issuer"
+                val path = request.url.encodedPath
+                if (path == metadataPath || path.startsWith("$metadataPath/") || path.endsWith(metadataPath)) {
+                    log.warn(
+                        "Issuer metadata request failed: exceptionType={}, causeType={}, status={}",
+                        error.javaClass.name,
+                        error.cause?.javaClass?.name,
+                        (error as? ResponseException)?.response?.status?.value,
+                    )
+                }
+            }
+        }
         engine {
             if (httpProxy != null) {
                 proxy = ProxyBuilder.http(httpProxy.url)
