@@ -27,7 +27,6 @@ import com.nimbusds.jose.jwk.gen.ECKeyGenerator
 import com.nimbusds.jose.util.Base64
 import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.SignedJWT
-import com.sun.net.httpserver.HttpServer
 import eu.europa.ec.eudi.sdjwt.SdJwt
 import eu.europa.ec.eudi.sdjwt.SdJwtAndKbJwt
 import eu.europa.ec.eudi.sdjwt.SdJwtVcSpec
@@ -73,7 +72,6 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Primary
 import org.springframework.test.context.TestPropertySource
 import java.io.ByteArrayOutputStream
-import java.net.InetSocketAddress
 import java.security.KeyPair
 import java.security.cert.X509Certificate
 import java.time.Instant
@@ -85,7 +83,7 @@ import kotlin.time.Duration.Companion.hours
 @VerifierApplicationTest([StatusListTokenValidatorTest.Config::class])
 @TestPropertySource(
     properties = [
-        "verifier.issuerMetadata.allowedIssuerPatterns[0]=http://127\\.0\\.0\\.1:.*",
+        "verifier.issuerMetadata.allowedIssuerPatterns[0]=https://issuer\\.example/.*",
     ],
 )
 class StatusListTokenValidatorTest {
@@ -96,6 +94,10 @@ class StatusListTokenValidatorTest {
         @Bean
         @Primary
         fun publishPresentationEvent(): PublishPresentationEvent = PublishPresentationEvent { }
+
+        @Bean
+        @Primary
+        fun fixtureHttpClient(): HttpClient = metadataHttpClient(wiredResponses)
     }
 
     @Autowired
@@ -103,20 +105,10 @@ class StatusListTokenValidatorTest {
 
     @Test
     fun `wired status validator decodes issuer metadata for tokens without x5c`() = runTest {
-        val signingKey = ECKeyGenerator(Curve.P_256)
-            .keyUse(KeyUse.SIGNATURE)
-            .keyID("issuer-key-1")
-            .generate()
-        val issuerServer = startIssuerServer(signingKey)
-
-        try {
-            wiredValidator.validate(
-                credentialWithStatusReference(issuerServer.statusListUri),
-                TransactionId("tx"),
-            )
-        } finally {
-            issuerServer.server.stop(0)
-        }
+        wiredValidator.validate(
+            credentialWithStatusReference(wiredStatusListUri),
+            TransactionId("tx"),
+        )
     }
 
     @Test
@@ -560,50 +552,14 @@ private fun metadataHttpClient(
 private fun Job.containsDescendant(candidate: Job): Boolean =
     this === candidate || children.any { it.containsDescendant(candidate) }
 
-private data class IssuerServer(
-    val server: HttpServer,
-    val statusListUri: String,
+private const val wiredIssuer = "https://issuer.example/api/v1/openid4vci"
+private const val wiredStatusListUri = "$wiredIssuer/status-lists/pension"
+private val wiredSigningKey = ECKeyGenerator(Curve.P_256).keyUse(KeyUse.SIGNATURE).keyID("issuer-key-1").generate()
+private val wiredResponses = mapOf(
+    "/.well-known/jwt-vc-issuer/api/v1/openid4vci" to """{"issuer":"$wiredIssuer","jwks_uri":"https://issuer.example/public_keys.jwks"}""",
+    "/public_keys.jwks" to wiredSigningKey.toPublicJWK().toPublicJWKSetJson(),
+    "/api/v1/openid4vci/status-lists/pension" to buildStatusListToken(wiredIssuer, wiredStatusListUri, wiredSigningKey),
 )
-
-private data class IssuerResponse(
-    val body: String,
-    val contentType: String,
-)
-
-private fun startIssuerServer(signingKey: ECKey): IssuerServer {
-    val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-    val baseUrl = "http://127.0.0.1:${server.address.port}"
-    val issuer = "$baseUrl/api/v1/openid4vci"
-    val statusListUri = "$issuer/status-lists/pension"
-    val responses = mapOf(
-        "/.well-known/jwt-vc-issuer/api/v1/openid4vci" to IssuerResponse(
-            body = """{"issuer":"$issuer","jwks_uri":"$baseUrl/public_keys.jwks"}""",
-            contentType = ContentType.Application.Json.toString(),
-        ),
-        "/public_keys.jwks" to IssuerResponse(
-            body = signingKey.toPublicJWK().toPublicJWKSetJson(),
-            contentType = ContentType.Application.Json.toString(),
-        ),
-        "/api/v1/openid4vci/status-lists/pension" to IssuerResponse(
-            body = buildStatusListToken(issuer, statusListUri, signingKey),
-            contentType = "application/statuslist+jwt",
-        ),
-    )
-    server.createContext("/") { exchange ->
-        val response = responses[exchange.requestURI.path]
-        if (response == null) {
-            exchange.sendResponseHeaders(404, -1)
-            exchange.close()
-        } else {
-            val bytes = response.body.toByteArray()
-            exchange.responseHeaders.set(HttpHeaders.ContentType, response.contentType)
-            exchange.sendResponseHeaders(200, bytes.size.toLong())
-            exchange.responseBody.use { it.write(bytes) }
-        }
-    }
-    server.start()
-    return IssuerServer(server, statusListUri)
-}
 
 private fun buildStatusListToken(
     issuer: String,

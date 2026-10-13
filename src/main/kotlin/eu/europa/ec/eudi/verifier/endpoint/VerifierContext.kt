@@ -26,7 +26,6 @@ import com.nimbusds.jose.jwk.ECKey
 import com.nimbusds.jose.jwk.JWK
 import com.nimbusds.jose.jwk.KeyUse
 import com.nimbusds.jose.jwk.gen.ECKeyGenerator
-import com.nimbusds.jose.util.Base64
 import com.nimbusds.jwt.SignedJWT
 import com.sksamuel.aedile.core.asCache
 import com.sksamuel.aedile.core.expireAfterWrite
@@ -42,6 +41,9 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.ProvideTrustSource
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.TrustSources
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cfg.GenerateRequestIdNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cfg.GenerateTransactionIdNimbus
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.BoundedHttpTransport
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.BoundedKtorEngine
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.OutboundPolicy
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.issuer.IssuerMetadataJwkSetResolver
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.issuer.IssuerMetadataTrustPolicy
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.CreateJarNimbus
@@ -49,8 +51,6 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.GenerateEphemeralEnc
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.jose.VerifyEncryptedResponseWithNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.json.jsonSupport
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.kms.loadKmsSigningMaterial
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.keystore.loadJWK
-import eu.europa.ec.eudi.verifier.endpoint.adapter.out.keystore.loadKeyStore
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.lotl.FetchLOTLCertificatesDSS
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DeviceResponseValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.mso.DocumentValidator
@@ -85,9 +85,6 @@ import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
-import org.apache.http.conn.ssl.NoopHostnameVerifier
-import org.apache.http.conn.ssl.TrustSelfSignedStrategy
-import org.apache.http.ssl.SSLContextBuilder
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.BeanRegistrarDsl
 import org.springframework.beans.factory.BeanRegistrarDsl.SupplierContextDsl
@@ -96,19 +93,18 @@ import org.springframework.boot.http.codec.CodecCustomizer
 import org.springframework.core.env.Environment
 import org.springframework.core.env.Profiles
 import org.springframework.core.env.getProperty
-import org.springframework.core.io.DefaultResourceLoader
 import org.springframework.core.io.FileSystemResource
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
-import org.springframework.http.server.reactive.ServerHttpRequest
 import org.springframework.http.codec.json.KotlinSerializationJsonDecoder
 import org.springframework.http.codec.json.KotlinSerializationJsonEncoder
+import org.springframework.http.server.reactive.ServerHttpRequest
 import org.springframework.security.config.web.server.ServerHttpSecurity
 import org.springframework.security.config.web.server.invoke
 import org.springframework.security.oauth2.jwt.ReactiveJwtDecoder
 import org.springframework.security.web.server.ServerAuthenticationEntryPoint
 import org.springframework.security.web.server.authorization.ServerAccessDeniedHandler
-import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.web.cors.CorsConfiguration
 import org.springframework.web.cors.reactive.CorsConfigurationSource
 import org.springframework.web.server.ServerWebExchange
@@ -120,7 +116,6 @@ import software.amazon.awssdk.services.kms.KmsClient
 import java.net.URI
 import java.security.KeyStore
 import java.security.cert.X509Certificate
-import java.util.Date
 import java.util.UUID
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
@@ -268,12 +263,21 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
 
         if (backendUrl.isNullOrBlank() || internalToken.isNullOrBlank()) {
             log.info(
-                "Authbound backend callback disabled (AUTHBOUND_BACKEND_URL/authbound.backend.url or AUTHBOUND_BACKEND_INTERNALTOKEN/authbound.backend.internalToken not set)",
+                "Authbound backend callback disabled (AUTHBOUND_BACKEND_URL/authbound.backend.url or " +
+                    "AUTHBOUND_BACKEND_INTERNALTOKEN/authbound.backend.internalToken not set)",
             )
             delegate
         } else {
             log.info("Enabling Authbound backend callback notifications to {}", backendUrl)
-            AuthboundBackendCallbackPublisher(delegate, bean(), backendUrl, internalToken)
+            AuthboundBackendCallbackPublisher(
+                delegate,
+                createBoundedHttpClient(
+                    OutboundPolicy.exactInternal(java.net.URI("$backendUrl/internal/eudi-verifier/presentations/wallet-response"), "POST"),
+                    true,
+                ),
+                backendUrl,
+                internalToken,
+            )
         }
     }
 
@@ -796,7 +800,9 @@ private fun jsonAuthEntryPoint(includeErrorDetails: Boolean): ServerAuthenticati
         val errorMessage = ex.message ?: "Invalid token"
         val jwtDebug = extractJwtDebugSummary(authHeader)
         log.warn(
-            "s2s.auth.failed method={} path={} status=401 requestId={} tx_id={} authHeaderPresent={} authScheme={} error={} tokenKid={} tokenAlg={} tokenTyp={} tokenIss={} tokenAud={} tokenSub={} tokenIat={} tokenExp={} tokenJti={} tokenParseError={}",
+            "s2s.auth.failed method={} path={} status=401 requestId={} tx_id={} authHeaderPresent={} authScheme={} error={} " +
+                "tokenKid={} tokenAlg={} tokenTyp={} tokenIss={} tokenAud={} tokenSub={} " +
+                "tokenIat={} tokenExp={} tokenJti={} tokenParseError={}",
             request.method?.name() ?: "UNKNOWN",
             request.uri.path,
             requestId,
@@ -905,7 +911,7 @@ private fun jarSigningConfig(environment: Environment, clock: Clock): SigningCon
     if (prod && signingKeyMode == SigningKeyEnum.GenerateRandom) {
         error(
             "GenerateRandom JAR signing key is not allowed in production. " +
-                "Set verifier.jar.signing.key=LoadFromKeystore or AwsKms and configure the signing key settings."
+                "Set verifier.jar.signing.key=LoadFromKeystore or AwsKms and configure the signing key settings.",
         )
     }
 
@@ -925,7 +931,25 @@ private fun jarSigningConfig(environment: Environment, clock: Clock): SigningCon
                 kmsConfig.region.id(),
                 kmsConfig.kid ?: "none",
             )
-            val kmsClient = KmsClient.builder().region(kmsConfig.region).build()
+            val endpoint = software.amazon.awssdk.services.kms.endpoints.KmsEndpointProvider.defaultProvider()
+                .resolveEndpoint(
+                    software.amazon.awssdk.services.kms.endpoints.KmsEndpointParams.builder().region(
+                        kmsConfig.region,
+                    ).useFips(false).useDualStack(false).build(),
+                ).join().url()
+            val kmsClient = KmsClient.builder().region(kmsConfig.region)
+                .credentialsProvider(software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider.create())
+                .endpointOverride(endpoint)
+                .httpClient(eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.BoundedAwsHttpClient(endpoint))
+                .overrideConfiguration {
+                        config ->
+                    config.apiCallTimeout(
+                        java.time.Duration.ofSeconds(10),
+                    ).apiCallAttemptTimeout(
+                        java.time.Duration.ofSeconds(10),
+                    ).retryPolicy(software.amazon.awssdk.core.retry.RetryPolicy.none())
+                }
+                .build()
             val material = loadKmsSigningMaterial(kmsClient, kmsConfig.keyId, algorithm, kmsConfig.kid)
             val certificateChain = loadCertificateChain(environment)
             validateKmsCertificateBinding(certificateChain, material.publicKey)
@@ -980,7 +1004,7 @@ private fun loadCertificateChain(environment: Environment): List<X509Certificate
         CertificateChainSourceEnum.Disabled -> null
         CertificateChainSourceEnum.File -> {
             val chainLocation = config.file ?: error("Missing required property 'verifier.jar.signing.cert.chain.file'")
-            val resource = DefaultResourceLoader().getResource(chainLocation)
+            val resource = eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.localResource(chainLocation)
             require(resource.exists()) {
                 "Could not load certificate chain from '$chainLocation'"
             }
@@ -1073,7 +1097,7 @@ private fun loadFromKeystore(environment: Environment, prod: Boolean, algorithm:
     val keystoreResource = run {
         val keystoreLocation = environment.getRequiredProperty("verifier.jar.signing.key.keystore")
         log.info("Will try to load Keystore from: '{}'", keystoreLocation)
-        val configuredResource = DefaultResourceLoader().getResource(keystoreLocation)
+        val configuredResource = eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.localResource(keystoreLocation)
         val resolvedResource = if (configuredResource.exists()) {
             configuredResource
         } else if (!prod) {
@@ -1194,15 +1218,10 @@ private fun Environment.trustSources(): Map<Regex, TrustSourceConfig>? {
         val pattern = patternStr.toRegex()
 
         // Parse LOTL configuration if present
-        val lotlSourceConfig = getPropertyOrEnvVariable("$indexPrefix.lotl.location")?.takeIf { it.isNotBlank() }?.let { lotlLocation ->
-            val location = URI(lotlLocation).toURL()
-            val serviceTypeFilter = getPropertyOrEnvVariable<ProviderKind>("$indexPrefix.lotl.serviceTypeFilter")
-            val refreshInterval = getPropertyOrEnvVariable("$indexPrefix.lotl.refreshInterval", "0 0 * * * *")
-
-            val lotlKeystoreConfig = parseKeyStoreConfig("$indexPrefix.lotl.keystore")
-
-            TrustedListConfig(location, serviceTypeFilter, refreshInterval, lotlKeystoreConfig)
+        require(getPropertyOrEnvVariable("$indexPrefix.lotl.location").isNullOrBlank()) {
+            "Online LOTL configuration is unsupported until its complete linked-download transport is protected"
         }
+        val lotlSourceConfig: TrustedListConfig? = null
 
         // Parse keystore configuration if present
         val keystoreConfig = parseKeyStoreConfig("$indexPrefix.keystore")
@@ -1275,7 +1294,7 @@ private fun Environment.parseKeyStoreConfig(propertyPrefix: String): KeyStoreCon
 }
 
 private fun loadKeystore(keystorePath: String, keystoreType: String, keystorePassword: String) = Either.catch {
-    DefaultResourceLoader().getResource(keystorePath)
+    eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.localResource(keystorePath)
         .inputStream
         .use {
             KeyStore.getInstance(keystoreType).apply {
@@ -1349,47 +1368,32 @@ private fun Environment.getOptionalList(
         ?.toNonEmptyListOrNull()
 
 /**
- * Creates an HttpClient that trusts self-signed certificates and performs no hostname verification.
+ * Creates the guarded public metadata client. Proxy and insecure TLS profiles fail closed.
  *
- * @param withJsonContentNegotiation if true, installs ContentNegotiation with JSON support
- * @param trustSelfSigned if true, configures the client to trust self-signed certificates and perform no hostname verification
- * @param httpProxy If not null, configures the client to use the provided proxy. If authentication provided, append it to the header
+ * @param withJsonContentNegotiation installs JSON support when true
+ * @param trustSelfSigned must be false
+ * @param httpProxy must be null
  */
 private fun createHttpClient(
     withJsonContentNegotiation: Boolean = true,
     trustSelfSigned: Boolean = false,
     httpProxy: HttpProxy? = null,
+): HttpClient {
+    require(!trustSelfSigned && httpProxy == null) { "Bounded outbound transport forbids proxy and insecure TLS profiles" }
+    return createBoundedHttpClient(OutboundPolicy.Public, false, withJsonContentNegotiation)
+}
+
+private fun createBoundedHttpClient(
+    policy: OutboundPolicy,
+    credentialsAllowed: Boolean,
+    withJsonContentNegotiation: Boolean = true,
 ): HttpClient =
-    HttpClient(Apache) {
+    HttpClient(BoundedKtorEngine(BoundedHttpTransport(policy, credentialsAllowed))) {
         if (withJsonContentNegotiation) {
-            install(ContentNegotiation) {
-                json(jsonSupport)
-            }
+            install(ContentNegotiation) { json(jsonSupport) }
         }
         expectSuccess = true
-        engine {
-            if (httpProxy != null) {
-                proxy = ProxyBuilder.http(httpProxy.url)
-            }
-            followRedirects = true
-            if (trustSelfSigned) {
-                customizeClient {
-                    setSSLContext(
-                        SSLContextBuilder.create()
-                            .loadTrustMaterial(TrustSelfSignedStrategy.INSTANCE)
-                            .build(),
-                    )
-                    setSSLHostnameVerifier(NoopHostnameVerifier.INSTANCE)
-                }
-            }
-        }
-        if (httpProxy?.username != null) {
-            defaultRequest {
-                val password = httpProxy.password ?: ""
-                val credentials = Base64.encode("${httpProxy.username}:$password")
-                header(HttpHeaders.ProxyAuthorization, "Basic $credentials")
-            }
-        }
+        followRedirects = false
     }
 
 data class HttpProxy(
