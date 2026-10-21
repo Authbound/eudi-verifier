@@ -76,6 +76,11 @@ internal class UtilityApi(
 
     private suspend fun handleValidateSdJwtVc(request: ServerRequest): ServerResponse {
         val form = request.awaitFormData()
+        val statusFlag = form["require_status"]
+        if (statusFlag != null && (statusFlag.size != 1 || statusFlag.single() !in listOf("true", "false"))) {
+            return badRequest().buildAndAwait()
+        }
+        val requireStatus = statusFlag?.singleOrNull() == "true"
         val unverifiedSdJwtVc = form["sd_jwt_vc"]
             ?.firstOrNull { it.isNotBlank() }
             .let {
@@ -89,12 +94,14 @@ internal class UtilityApi(
             }
         val issuerChain = form["issuer_chain"]?.filterNot { it.isNullOrBlank() }?.firstOrNull()
 
-        return when (val result = validateSdJwtVc(unverifiedSdJwtVc, nonce, issuerChain)) {
+        return when (val result = validateSdJwtVc(unverifiedSdJwtVc, nonce, issuerChain, requireStatus)) {
             is SdJwtVcValidationResult.Valid -> {
                 val reCreated = with(NimbusSdJwtOps) {
                     result.payload.sdJwt.recreateClaimsAndDisclosuresPerClaim().first
                 }
-                ok().json().bodyValueAndAwait(reCreated)
+                val response = ok().json()
+                if (requireStatus) response.header("Authbound-Status-Validation", "valid")
+                response.bodyValueAndAwait(reCreated)
             }
             is SdJwtVcValidationResult.Invalid -> badRequest().json().bodyValueAndAwait(result.toJson())
         }

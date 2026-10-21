@@ -94,20 +94,23 @@ internal class ValidateSdJwtVc(
         unverified: JsonObject,
         nonce: Nonce,
         issuerChain: String?,
+        requireStatus: Boolean = false,
     ): SdJwtVcValidationResult =
-        validate(unverified.left(), nonce, issuerChain)
+        validate(unverified.left(), nonce, issuerChain, requireStatus)
 
     suspend operator fun invoke(
         unverified: String,
         nonce: Nonce,
         issuerChain: String?,
+        requireStatus: Boolean = false,
     ): SdJwtVcValidationResult =
-        validate(unverified.right(), nonce, issuerChain)
+        validate(unverified.right(), nonce, issuerChain, requireStatus)
 
     private suspend fun validate(
         unverified: Either<JsonObject, String>,
         nonce: Nonce,
         issuerChain: String?,
+        requireStatus: Boolean,
     ): SdJwtVcValidationResult {
         val sdJwtVcValidator = sdJwtVcValidator(issuerChain)
             .getOrElse {
@@ -115,8 +118,8 @@ internal class ValidateSdJwtVc(
             }
 
         return unverified.fold(
-            ifLeft = { sdJwtVcValidator.validate(it, nonce, null) },
-            ifRight = { sdJwtVcValidator.validate(it, nonce, null) },
+            ifLeft = { sdJwtVcValidator.validate(it, nonce, null, requireStatus) },
+            ifRight = { sdJwtVcValidator.validate(it, nonce, null, requireStatus) },
         ).fold(
             ifLeft = { errors -> SdJwtVcValidationResult.Invalid(errors.map { it.toSdJwtVcValidationError() }) },
             ifRight = { SdJwtVcValidationResult.Valid(it) },

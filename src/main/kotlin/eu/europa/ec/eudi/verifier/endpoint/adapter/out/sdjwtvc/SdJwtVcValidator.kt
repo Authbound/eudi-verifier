@@ -173,20 +173,23 @@ internal class SdJwtVcValidator(
         unverified: String,
         nonce: Nonce,
         transactionId: TransactionId? = null,
+        requireStatus: Boolean = false,
     ): Either<NonEmptyList<SdJwtVcValidationError>, SdJwtAndKbJwt<SignedJWT>> =
-        validate(unverified.right(), nonce, transactionId)
+        validate(unverified.right(), nonce, transactionId, requireStatus)
 
     suspend fun validate(
         unverified: JsonObject,
         nonce: Nonce,
         transactionId: TransactionId? = null,
+        requireStatus: Boolean = false,
     ): Either<NonEmptyList<SdJwtVcValidationError>, SdJwtAndKbJwt<SignedJWT>> =
-        validate(unverified.left(), nonce, transactionId)
+        validate(unverified.left(), nonce, transactionId, requireStatus)
 
     private suspend fun validate(
         unverified: Either<JsonObject, String>,
         nonce: Nonce,
         transactionId: TransactionId?,
+        requireStatus: Boolean,
     ): Either<NonEmptyList<SdJwtVcValidationError>, SdJwtAndKbJwt<SignedJWT>> {
         val challenge = buildJsonObject {
             put(RFC7519.AUDIENCE, audience.clientId)
@@ -194,6 +197,12 @@ internal class SdJwtVcValidator(
         }
 
         return Either.catch {
+            if (requireStatus && statusListTokenValidator == null) {
+                throw StatusCheckException(
+                    "Required status validation is unavailable",
+                    IllegalStateException("Status validator is disabled"),
+                )
+            }
             sdJwtVcVerifier.verify(unverified, challenge, transactionId).getOrThrow()
         }.fold(
             ifRight = { it.right() },
@@ -228,7 +237,7 @@ internal class SdJwtVcValidator(
                 statusListTokenValidator?.validate(it, transactionId)
                 it
             }
-    }
+        }
 }
 
 internal fun x509CertificateTrust(
