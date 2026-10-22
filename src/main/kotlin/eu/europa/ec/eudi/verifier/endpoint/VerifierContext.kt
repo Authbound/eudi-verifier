@@ -167,6 +167,7 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
         env.getProperty("verifier.persistence", PersistenceModeEnum::class.java)
             ?: PersistenceModeEnum.Redis
     validateDeploymentConfig(env)
+    val localOrigins = localWalletOrigins(env)
 
     //
     // JOSE
@@ -227,12 +228,12 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
     profile("self-signed") {
         log.warn("Using Ktor HttpClients that trust self-signed certificates and perform no hostname verification with proxy")
         registerBean<HttpClient> {
-            createHttpClient(trustSelfSigned = true, httpProxy = proxy)
+            createHttpClient(trustSelfSigned = true, httpProxy = proxy, localWalletOrigins = localOrigins)
         }
     }
     profile("!self-signed") {
         registerBean<HttpClient> {
-            createHttpClient(httpProxy = proxy)
+            createHttpClient(httpProxy = proxy, localWalletOrigins = localOrigins)
         }
     }
     registerBean {
@@ -272,7 +273,7 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
             AuthboundBackendCallbackPublisher(
                 delegate,
                 createBoundedHttpClient(
-                    OutboundPolicy.exactInternal(java.net.URI("$backendUrl/internal/eudi-verifier/presentations/wallet-response"), "POST"),
+                    OutboundPolicy.exactInternal(java.net.URI("$backendUrl/internal/eudi-verifier/presentations/wallet-response"), "POST", localOrigins),
                     true,
                 ),
                 backendUrl,
@@ -577,6 +578,7 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
                 issuers = issuers.toSet(),
                 audiences = audiences.toSet(),
                 clockSkewSeconds = clockSkewSeconds,
+                localWalletOrigins = localOrigins,
             )
         }
     } else {
@@ -1378,9 +1380,11 @@ private fun createHttpClient(
     withJsonContentNegotiation: Boolean = true,
     trustSelfSigned: Boolean = false,
     httpProxy: HttpProxy? = null,
+    localWalletOrigins: Set<java.net.URI> = emptySet(),
 ): HttpClient {
     require(!trustSelfSigned && httpProxy == null) { "Bounded outbound transport forbids proxy and insecure TLS profiles" }
-    return createBoundedHttpClient(OutboundPolicy.Public, false, withJsonContentNegotiation)
+    val policy = if (localWalletOrigins.isEmpty()) OutboundPolicy.Public else OutboundPolicy.localWallet(localWalletOrigins)
+    return createBoundedHttpClient(policy, false, withJsonContentNegotiation)
 }
 
 private fun createBoundedHttpClient(

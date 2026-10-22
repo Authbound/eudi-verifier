@@ -19,21 +19,31 @@ import java.net.InetAddress
 import java.net.URI
 
 /** Destination authority is separate from cryptographic issuer trust. */
-class OutboundPolicy private constructor(private val exact: URI?, private val method: String, private val privateNetwork: Boolean) {
+class OutboundPolicy private constructor(
+    private val exact: URI?,
+    private val method: String,
+    private val privateNetwork: Boolean,
+    private val localOrigins: Set<URI> = emptySet(),
+) {
     fun bind(uri: URI, requestMethod: String, lookup: (String) -> Array<InetAddress>): BoundDestination {
         require(requestMethod == method) { "Outbound method is not authorized" }
         require(uri.userInfo == null && uri.fragment == null && !uri.host.isNullOrBlank()) { "Invalid outbound authority" }
         require(uri.host.all { it.code < 128 } && !uri.host.endsWith('.')) { "Noncanonical outbound host" }
-        if (exact == null) {
+        val local = localOrigins.any { it.scheme == uri.scheme && it.rawAuthority == uri.rawAuthority }
+        if (exact == null && !local) {
             require(uri.scheme == "https" && uri.port in listOf(-1, 443)) { "Public outbound requests require HTTPS on port 443" }
             require(
                 uri.host.lowercase() !in setOf("localhost", "localhost.localdomain") && !uri.host.endsWith(".localhost"),
             ) { "Local outbound host" }
-        } else {
+        } else if (exact != null) {
             require(uri == exact) { "Outbound URI is outside the configured exact endpoint" }
         }
         val addresses = lookup(uri.host)
-        require(addresses.isNotEmpty() && addresses.all { if (privateNetwork) isPrivate(it) else isGlobal(it) }) {
+        require(
+            addresses.isNotEmpty() && addresses.all {
+                if (local) it.isLoopbackAddress else if (privateNetwork) isPrivate(it) else isGlobal(it)
+            },
+        ) {
             "Outbound DNS answer includes a disallowed address"
         }
         return BoundDestination(uri.host, addresses.copyOf())
@@ -42,11 +52,22 @@ class OutboundPolicy private constructor(private val exact: URI?, private val me
     companion object {
         val Public = OutboundPolicy(null, "GET", false)
 
-        fun exactInternal(uri: URI, method: String): OutboundPolicy {
+        /** Only the opt-in local wallet profile supplies these origins; ordinary public egress is unchanged. */
+        fun localWallet(origins: Set<URI>): OutboundPolicy =
+            OutboundPolicy(null, "GET", false, validateLocalOrigins(origins))
+
+        fun exactInternal(uri: URI, method: String, localOrigins: Set<URI> = emptySet()): OutboundPolicy {
             require(
                 uri.scheme in setOf("http", "https") && uri.userInfo == null && uri.fragment == null &&
                     uri.query == null && !uri.host.isNullOrBlank(),
             )
+            val origins = if (localOrigins.isEmpty()) emptySet() else validateLocalOrigins(localOrigins)
+            if (origins.any { it.scheme == uri.scheme && it.rawAuthority == uri.rawAuthority }) {
+                require(uri.rawPath == "/internal/eudi-verifier/presentations/wallet-response" && method == "POST") {
+                    "Local callback is outside the approved endpoint"
+                }
+                return OutboundPolicy(uri, method, false, origins)
+            }
             require(uri.host in setOf("pension-backend", "gateway")) { "Unapproved internal service" }
             val supported = (
                 uri.scheme == "http" && uri.host == "pension-backend" && uri.port == 3010 &&
@@ -60,12 +81,25 @@ class OutboundPolicy private constructor(private val exact: URI?, private val me
             return OutboundPolicy(uri, method, true)
         }
 
-        fun exactPublic(uri: URI, method: String): OutboundPolicy {
+        fun exactPublic(uri: URI, method: String, localOrigins: Set<URI> = emptySet()): OutboundPolicy {
+            val origins = if (localOrigins.isEmpty()) emptySet() else validateLocalOrigins(localOrigins)
+            val local = origins.any { it.scheme == uri.scheme && it.rawAuthority == uri.rawAuthority }
             require(
-                uri.scheme == "https" && uri.port in listOf(-1, 443) && uri.userInfo == null && uri.fragment == null &&
+                uri.scheme == "https" && (uri.port in listOf(-1, 443) || local) && uri.userInfo == null && uri.fragment == null &&
                     uri.query == null && !uri.host.isNullOrBlank(),
             )
-            return OutboundPolicy(uri, method, false)
+            return OutboundPolicy(uri, method, false, origins)
+        }
+
+        private fun validateLocalOrigins(origins: Set<URI>): Set<URI> {
+            require(
+                origins.isNotEmpty() && origins.all {
+                    it.scheme == "https" && it.host in setOf("localhost", "127.0.0.1", "[::1]") &&
+                        it.port in 1..65535 && it.userInfo == null && it.query == null && it.fragment == null &&
+                        it.rawPath in setOf("", "/")
+                },
+            ) { "Local wallet origins must be explicit loopback HTTPS authorities" }
+            return origins.toSet()
         }
 
         private fun isPrivate(address: InetAddress): Boolean {

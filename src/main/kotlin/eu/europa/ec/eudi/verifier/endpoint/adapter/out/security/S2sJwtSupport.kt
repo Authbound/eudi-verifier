@@ -59,12 +59,13 @@ fun buildS2sJwtDecoder(
     issuers: Set<String>,
     audiences: Set<String>,
     clockSkewSeconds: Long,
+    localWalletOrigins: Set<java.net.URI> = emptySet(),
 ): ReactiveJwtDecoder {
     val uri = java.net.URI(jwksUrl)
     val policy = if (uri.scheme == "http") {
         eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.OutboundPolicy.exactInternal(uri, "GET")
     } else {
-        eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.OutboundPolicy.exactPublic(uri, "GET")
+        eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.OutboundPolicy.exactPublic(uri, "GET", localWalletOrigins)
     }
     val transport = eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.BoundedHttpTransport(policy)
     val client = org.springframework.web.reactive.function.client.WebClient.builder().exchangeFunction { request ->
