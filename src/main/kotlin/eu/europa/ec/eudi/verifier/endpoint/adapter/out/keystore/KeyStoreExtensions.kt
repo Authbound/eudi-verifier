@@ -20,13 +20,12 @@ import arrow.core.some
 import arrow.core.toNonEmptyListOrNull
 import com.nimbusds.jose.jwk.*
 import com.nimbusds.jose.util.Base64
-import org.springframework.core.io.DefaultResourceLoader
 import java.security.KeyStore
 import java.security.cert.X509Certificate
 
 fun loadKeyStore(location: String, type: String = KeyStore.getDefaultType(), password: String? = null): KeyStore {
     val keystoreResource = run {
-        val keystoreResource = DefaultResourceLoader().getResource(location)
+        val keystoreResource = eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.localResource(location)
             .some()
             .filter { it.exists() }
             .getOrNull()

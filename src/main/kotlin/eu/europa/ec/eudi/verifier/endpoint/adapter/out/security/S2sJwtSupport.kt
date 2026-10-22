@@ -59,8 +59,27 @@ fun buildS2sJwtDecoder(
     issuers: Set<String>,
     audiences: Set<String>,
     clockSkewSeconds: Long,
+    localWalletOrigins: Set<java.net.URI> = emptySet(),
 ): ReactiveJwtDecoder {
+    val uri = java.net.URI(jwksUrl)
+    val policy = if (uri.scheme == "http") {
+        eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.OutboundPolicy.exactInternal(uri, "GET")
+    } else {
+        eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.OutboundPolicy.exactPublic(uri, "GET", localWalletOrigins)
+    }
+    val transport = eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.BoundedHttpTransport(policy)
+    val client = org.springframework.web.reactive.function.client.WebClient.builder().exchangeFunction { request ->
+        reactor.core.publisher.Mono.fromCallable {
+            val response = transport.execute(request.url(), request.method().name())
+            org.springframework.web.reactive.function.client.ClientResponse.create(
+                org.springframework.http.HttpStatusCode.valueOf(response.status),
+            )
+                .headers { target -> response.headers.forEach { (name, value) -> target.add(name, value) } }
+                .body(response.body.toString(Charsets.UTF_8)).build()
+        }.subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic())
+    }.build()
     val decoder = NimbusReactiveJwtDecoder.withJwkSetUri(jwksUrl)
+        .webClient(client)
         .jwsAlgorithm(SignatureAlgorithm.ES256)
         .build()
     val timestampValidator = JwtTimestampValidator(Duration.ofSeconds(clockSkewSeconds))

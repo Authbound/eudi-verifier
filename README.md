@@ -861,3 +861,13 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
+
+### Local Business Wallet issuer
+
+The optional `local-wallet` Spring profile supports the existing wallet's loopback HTTPS issuer without weakening public egress policy. Supply `server.address=127.0.0.1` and an explicit comma-separated `verifier.localWallet.allowedOrigins` list, for example `https://localhost:54471,https://localhost:54472`. Only those exact HTTPS authorities may resolve to loopback addresses. The usual public rules, DNS binding, response limits, credential filtering and redirect rejection still apply elsewhere. Setting local origins under `prod`/`production`, without `local-wallet`, or on a non-loopback listener fails startup.
+
+Issuer metadata trust remains a separate allowlist (`verifier.issuerMetadata.allowedIssuerPatterns`); local network permission does not establish issuer trust. Keep S2S authentication and credential-status validation enabled. Use a process-specific JVM truststore containing the approved local CA and keep hostname verification enabled; do not use the insecure `self-signed` profile. The verifier's local HTTPS bridge must use the matching localhost certificate.
+
+The headless regression gate also permits an allowlisted backend HTTPS origin for `POST /internal/eudi-verifier/presentations/wallet-response`. That client remains bound to the exact callback URI, method and loopback DNS answers. Local egress configuration is rejected with the KMS deployment profiles as well as `prod`/`production`.
+
+The local installation uses HTTP 8071 behind HTTPS 54472, the existing issuer on HTTPS 54471, `pre-registered` client ID `authbound-business-wallet-local`, `eudi-openid4vp://`, and `DirectPostJwt`. Publish only the service signer's public JWKS at its configured S2S key endpoint; private keys belong solely in the backend's private configuration. `InMemory` persistence is suitable only for this explicit development installation: restarting the verifier invalidates in-flight transactions, and production still requires Redis.

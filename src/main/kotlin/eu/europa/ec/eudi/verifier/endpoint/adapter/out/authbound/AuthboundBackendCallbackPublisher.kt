@@ -48,7 +48,9 @@ class AuthboundBackendCallbackPublisher(
     private val httpClient: HttpClient,
     private val backendBaseUrl: String,
     private val internalToken: String,
-) : PublishPresentationEvent {
+) : PublishPresentationEvent, org.springframework.beans.factory.DisposableBean {
+
+    override fun destroy() { httpClient.close() }
 
     private val logger: Logger = LoggerFactory.getLogger(AuthboundBackendCallbackPublisher::class.java)
     private val failureCounter = Metrics.counter("eudi_backend_callback_failures_total")
