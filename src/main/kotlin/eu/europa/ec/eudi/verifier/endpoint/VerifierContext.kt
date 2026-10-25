@@ -942,7 +942,7 @@ private fun jarSigningConfig(environment: Environment, clock: Clock): SigningCon
                     ).useFips(false).useDualStack(false).build(),
                 ).join().url()
             val kmsClient = KmsClient.builder().region(kmsConfig.region)
-                .credentialsProvider(software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider.create())
+                .credentialsProvider(software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider.create())
                 .endpointOverride(endpoint)
                 .httpClient(eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.BoundedAwsHttpClient(endpoint))
                 .overrideConfiguration {
