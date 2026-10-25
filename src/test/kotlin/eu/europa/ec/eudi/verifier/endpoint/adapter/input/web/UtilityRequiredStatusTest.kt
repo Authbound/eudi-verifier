@@ -62,6 +62,7 @@ import java.security.MessageDigest
 import java.time.Instant
 import java.util.Date
 import java.util.zip.DeflaterOutputStream
+import kotlin.time.Duration.Companion.seconds
 
 internal class UtilityRequiredStatusTest {
     private val issuer = "https://issuer.example/api/v1/openid4vci"
@@ -101,7 +102,7 @@ internal class UtilityRequiredStatusTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = ["nonce", "audience", "holder", "disclosure", "issuer"])
+    @ValueSource(strings = ["nonce", "audience", "holder", "disclosure", "issuer", "kb-iat-past", "kb-iat-future"])
     fun `status success cannot hide invalid credential or holder proof`(fault: String) {
         post(client(), credential(fault = fault)).expectStatus().isBadRequest
             .expectHeader().doesNotExist(header)
@@ -158,7 +159,16 @@ internal class UtilityRequiredStatusTest {
             PublishPresentationEvent { },
             trust,
         ) else null
-        val validator = SdJwtVcValidator(trust, http, policy, TestContext.verifierId, statusValidator, TypeMetadataPolicy.NotUsed)
+        val validator = SdJwtVcValidator(
+            trust,
+            http,
+            policy,
+            TestContext.verifierId,
+            statusValidator,
+            clock = Clock.System,
+            skew = 5.seconds,
+            typeMetadataPolicy = TypeMetadataPolicy.NotUsed,
+        )
         val validate = ValidateSdJwtVc({ validator }, { error("No synthetic certificate chain expected") })
         return WebTestClient.bindToRouterFunction(
             UtilityApi(mock(ValidateMsoMdocDeviceResponse::class.java), validate, ProcessSdJwtVc()).route,
@@ -187,7 +197,7 @@ internal class UtilityRequiredStatusTest {
         }
         val presentation = "$issuerJwt~$disclosure~"
         val kb = JWTClaimsSet.Builder().audience(if (fault == "audience") "wrong-audience" else TestContext.verifierId.clientId)
-            .issueTime(Date.from(now)).claim("nonce", if (fault == "nonce") "wrong-nonce" else nonce)
+            .issueTime(Date.from(kbIssuedAt(fault))).claim("nonce", if (fault == "nonce") "wrong-nonce" else nonce)
             .claim("sd_hash", digest(presentation)).build()
         val key = if (fault == "holder") ECKeyGenerator(Curve.P_256).generate() else holderKey
         val token = presentation + signed(kb, "kb+jwt", key)
@@ -195,6 +205,13 @@ internal class UtilityRequiredStatusTest {
             disclosure,
             Base64URL.encode("""["synthetic-salt","name","Mallory"]""").toString(),
         ) else token
+    }
+
+    // The verifier accepts a KB-JWT `iat` only within the configured skew (PT5S) of validation time.
+    private fun kbIssuedAt(fault: String): Instant = when (fault) {
+        "kb-iat-past" -> now.minusSeconds(60)
+        "kb-iat-future" -> now.plusSeconds(60)
+        else -> now
     }
 
     private fun statusToken(status: String): String {

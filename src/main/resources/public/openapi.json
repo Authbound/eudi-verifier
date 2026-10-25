@@ -1504,6 +1504,7 @@
           "TypeMetadataResolutionFailure",
           "TypeMetadataValidationFailure",
           "StatusCheckFailed",
+          "StatusNotValid",
           "UnexpectedError",
           "InvalidIssuerChain"
         ]

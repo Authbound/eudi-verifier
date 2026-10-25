@@ -34,15 +34,15 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.out.issuer.IssuerMetadataTrus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.StatusCheckException
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.tokenstatuslist.StatusListTokenValidator
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.utils.getOrThrow
+import eu.europa.ec.eudi.verifier.endpoint.domain.Clock
 import eu.europa.ec.eudi.verifier.endpoint.domain.Nonce
 import eu.europa.ec.eudi.verifier.endpoint.domain.TransactionId
 import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierId
 import io.ktor.client.HttpClient
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 import java.security.cert.X509Certificate
+import kotlin.time.Duration
 
 internal enum class SdJwtVcValidationErrorCode {
     IsUnparsable,
@@ -70,6 +70,7 @@ internal enum class SdJwtVcValidationErrorCode {
     TypeMetadataResolutionFailure,
 
     StatusCheckFailed,
+    StatusNotValid,
 
     UnexpectedError,
 }
@@ -118,6 +119,8 @@ private fun SdJwtVcVerificationError.toSdJwtVcValidationErrorCode(): SdJwtVcVali
         IssuerKeyVerificationError.CannotDetermineIssuerVerificationMethod -> SdJwtVcValidationErrorCode.UnableToDetermineVerificationMethod
         is TypeMetadataVerificationError.TypeMetadataResolutionFailure -> SdJwtVcValidationErrorCode.TypeMetadataResolutionFailure
         is TypeMetadataVerificationError.TypeMetadataValidationFailure -> SdJwtVcValidationErrorCode.TypeMetadataValidationFailure
+        is SdJwtVcVerificationError.StatusVerificationError.NonValidStatus -> SdJwtVcValidationErrorCode.StatusNotValid
+        is SdJwtVcVerificationError.StatusVerificationError.StatusCheckFailure -> SdJwtVcValidationErrorCode.StatusCheckFailed
     }
 
 private val log = LoggerFactory.getLogger(SdJwtVcValidator::class.java)
@@ -128,6 +131,8 @@ internal class SdJwtVcValidator(
     private val issuerMetadataTrustPolicy: IssuerMetadataTrustPolicy,
     private val audience: VerifierId,
     private val statusListTokenValidator: StatusListTokenValidator?,
+    private val clock: Clock,
+    private val skew: Duration,
     typeMetadataPolicy: TypeMetadataPolicy,
 ) {
     private val sdJwtVcVerifier: SdJwtVcVerifier<SignedJWT> = run {
@@ -140,6 +145,7 @@ internal class SdJwtVcValidator(
                 ),
             ),
             typeMetadataPolicy = typeMetadataPolicy,
+            checkStatus = null,
         )
     }
 
@@ -166,6 +172,7 @@ internal class SdJwtVcValidator(
         NimbusSdJwtOps.SdJwtVcVerifier(
             issuerVerificationMethod = IssuerVerificationMethod.usingCustom(noSignatureVerifier),
             typeMetadataPolicy = typeMetadataPolicy,
+            checkStatus = null,
         )
     }
 
@@ -191,10 +198,12 @@ internal class SdJwtVcValidator(
         transactionId: TransactionId?,
         requireStatus: Boolean,
     ): Either<NonEmptyList<SdJwtVcValidationError>, SdJwtAndKbJwt<SignedJWT>> {
-        val challenge = buildJsonObject {
-            put(RFC7519.AUDIENCE, audience.clientId)
-            put("nonce", nonce.value)
-        }
+        val challenge = ChallengePredicate(
+            issuedAt = clock.now(),
+            audience = audience.clientId,
+            nonce = nonce.value,
+            skew = skew,
+        )
 
         return Either.catch {
             if (requireStatus && statusListTokenValidator == null) {
@@ -226,7 +235,7 @@ internal class SdJwtVcValidator(
 
     private suspend fun SdJwtVcVerifier<SignedJWT>.verify(
         unverified: Either<JsonObject, String>,
-        challenge: JsonObject,
+        challenge: ChallengePredicate,
         transactionId: TransactionId?,
     ): Either<Throwable, SdJwtAndKbJwt<SignedJWT>> =
         unverified.fold(

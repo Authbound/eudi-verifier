@@ -691,6 +691,8 @@ private fun SupplierContextDsl<*>.sdJwtVcValidator(
     audience = bean<VerifierConfig>().verifierId,
     beanProvider<StatusListTokenValidator>().ifAvailable,
     typeMetadataPolicy = bean<TypeMetadataPolicy>(),
+    clock = bean(),
+    skew = env.clockSkew(),
 )
 
 private fun extractTransactionId(request: ServerHttpRequest): String? {
@@ -1434,3 +1436,10 @@ internal data class TypeMetadataResolutionProperties(
         val allowedAlgorithms: Set<IntegrityAlgorithm> = IntegrityAlgorithm.entries.toSet(),
     )
 }
+
+private fun Environment.clockSkew(): Duration =
+    Duration.parse(getProperty("verifier.validation.sdJwtVc.kbJwt.clock.skew", "PT5S")).also {
+        require(!it.isNegative()) {
+            "Skew must be a positive duration"
+        }
+    }
