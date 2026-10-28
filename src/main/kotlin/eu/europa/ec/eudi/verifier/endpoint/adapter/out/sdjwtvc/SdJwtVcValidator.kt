@@ -220,7 +220,10 @@ internal class SdJwtVcValidator(
                 val errors =
                     if (!sdJwtVcError.isSignatureVerificationFailure()) nonEmptyListOf(SdJwtVcValidationError(sdJwtVcError))
                     else Either.catch {
-                        sdJwtVcVerifierNoSignatureVerification.verify(unverified, challenge, transactionId).getOrThrow()
+                        // Diagnostics only: this credential's signature did not verify, so its
+                        // status list reference is untrusted and must never be fetched.
+                        sdJwtVcVerifierNoSignatureVerification
+                            .verify(unverified, challenge, transactionId, checkStatus = false).getOrThrow()
                     }.fold(
                         ifRight = { nonEmptyListOf(SdJwtVcValidationError(sdJwtVcError)) },
                         ifLeft = { sdJwtError ->
@@ -237,13 +240,14 @@ internal class SdJwtVcValidator(
         unverified: Either<JsonObject, String>,
         challenge: ChallengePredicate,
         transactionId: TransactionId?,
+        checkStatus: Boolean = true,
     ): Either<Throwable, SdJwtAndKbJwt<SignedJWT>> =
         unverified.fold(
             ifLeft = { Either.catch { verify(it, challenge).getOrThrow() } },
             ifRight = { Either.catch { verify(it, challenge).getOrThrow() } },
         ).flatMap {
             Either.catch {
-                statusListTokenValidator?.validate(it, transactionId)
+                if (checkStatus) statusListTokenValidator?.validate(it, transactionId)
                 it
             }
         }
