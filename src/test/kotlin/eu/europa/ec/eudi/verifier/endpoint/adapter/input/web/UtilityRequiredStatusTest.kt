@@ -49,6 +49,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.fullPath
 import io.ktor.serialization.kotlinx.json.json
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
@@ -108,6 +109,14 @@ internal class UtilityRequiredStatusTest {
             .expectHeader().doesNotExist(header)
     }
 
+    @Test
+    fun `a credential with an invalid issuer signature never triggers a status list fetch`() {
+        val requested = mutableListOf<String>()
+        post(client(requested = requested), credential(fault = "issuer")).expectStatus().isBadRequest
+            .expectHeader().doesNotExist(header)
+        assertTrue(requested.none { it.contains("status-lists") }, "status list fetched for an unverified credential: $requested")
+    }
+
     @ParameterizedTest
     @ValueSource(strings = ["false", "absent"])
     fun `optional callers never receive required status confirmation`(flag: String) {
@@ -132,10 +141,15 @@ internal class UtilityRequiredStatusTest {
             .accept(MediaType.APPLICATION_JSON).body(BodyInserters.fromFormData(form)).exchange()
     }
 
-    private fun client(enabled: Boolean = true, status: String = "active"): WebTestClient {
+    private fun client(
+        enabled: Boolean = true,
+        status: String = "active",
+        requested: MutableList<String> = mutableListOf(),
+    ): WebTestClient {
         val http = HttpClient(
             MockEngine { request ->
                 val path = request.url.fullPath
+                requested += path
                 val body = when (path) {
                     "/.well-known/jwt-vc-issuer/api/v1/openid4vci" ->
                         """{"issuer":"$issuer","jwks_uri":"https://issuer.example/jwks"}"""
