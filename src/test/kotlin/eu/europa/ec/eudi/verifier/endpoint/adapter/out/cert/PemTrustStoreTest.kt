@@ -53,6 +53,14 @@ class PemTrustStoreTest {
     }
 
     @Test
+    fun `PEM with escaped newlines from an env file is accepted`() {
+        val (trusted, _) = Sample.create()
+        val escaped = trusted.trustCert.toPem().replace("\n", "\\n")
+
+        assertEquals(1, pemTrustStore(escaped).size())
+    }
+
+    @Test
     fun `text without certificates is rejected`() {
         assertFailsWith<IllegalArgumentException> { pemTrustStore("not a certificate") }
     }

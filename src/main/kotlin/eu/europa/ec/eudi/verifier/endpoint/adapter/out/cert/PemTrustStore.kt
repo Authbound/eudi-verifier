@@ -22,12 +22,13 @@ import java.security.cert.X509Certificate
 
 /**
  * Builds an in-memory trust store from PEM certificates, so issuer trust anchors can be
- * configured as plain values instead of mounted keystore files.
+ * configured as plain values instead of mounted keystore files. Env files often carry the
+ * PEM on one line with escaped newlines, so `\n` is accepted as a line break.
  */
 internal fun pemTrustStore(pem: String): KeyStore {
     val certificates = try {
         CertificateFactory.getInstance("X.509")
-            .generateCertificates(pem.byteInputStream())
+            .generateCertificates(pem.replace("\\n", "\n").byteInputStream())
             .filterIsInstance<X509Certificate>()
     } catch (error: CertificateException) {
         throw IllegalArgumentException("Trust anchors are not valid PEM certificates", error)
