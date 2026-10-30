@@ -15,6 +15,7 @@
  */
 package eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert
 
+import arrow.core.toNonEmptyListOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.slf4j.Logger
@@ -49,12 +50,15 @@ class TrustSources(
 
     suspend fun updateWithX5CShouldBe(pattern: Regex, certs: List<X509Certificate>) {
         mutex.withLock {
-            val x5CShouldBe = X5CShouldBe(
-                rootCACertificates = certs,
-                customizePKIX = { isRevocationEnabled = revocationEnabled },
-            )
-            x5CShouldBeMap[pattern] = x5CShouldBe
-            logger.info("TrustSources updated for pattern $pattern with ${x5CShouldBe.caCertificates().size} certificates")
+            val anchors = certs.toNonEmptyListOrNull()
+            if (anchors == null) {
+                // An empty source would otherwise become X5CShouldBe.Ignored and accept any chain.
+                x5CShouldBeMap.remove(pattern)
+                logger.error("Trust source for pattern $pattern has no certificates: its credentials will be refused")
+                return@withLock
+            }
+            x5CShouldBeMap[pattern] = X5CShouldBe.Trusted(anchors) { isRevocationEnabled = revocationEnabled }
+            logger.info("TrustSources updated for pattern $pattern with ${anchors.size} certificates")
         }
     }
 

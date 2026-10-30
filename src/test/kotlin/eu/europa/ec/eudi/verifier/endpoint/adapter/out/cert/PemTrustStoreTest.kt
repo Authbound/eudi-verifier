@@ -61,4 +61,12 @@ class PemTrustStoreTest {
     fun `trust sources without an entry for a type give no trust`() = runTest {
         assertNull(TrustSources()("urn:vc:authbound:pid:1.0"))
     }
+
+    @Test
+    fun `a trust source that loaded no certificates gives no trust`() = runTest {
+        val trustSources = TrustSources()
+        trustSources.updateWithX5CShouldBe(Regex(".*"), emptyList())
+
+        assertNull(trustSources("urn:vc:authbound:pid:1.0"))
+    }
 }
