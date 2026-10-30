@@ -162,10 +162,10 @@ class CreateJarNimbus : CreateJar {
                 )
             }
 
-            val vpFormats = c.vpFormatsSupported.toJackson()
-            setCustomField(OpenId4VPSpec.VP_FORMATS, vpFormats)
-            // Older wallets still expect vp_formats_supported even though vp_formats is the newer field.
-            setCustomField(OpenId4VPSpec.VP_FORMATS_SUPPORTED, vpFormats)
+            // OpenID4VP 1.0 (§5.1, §11.1) names this vp_formats_supported. Never also send the
+            // pre-1.0 vp_formats: wallets infer the draft from the parameters, and the two names
+            // imply incompatible drafts (Credo and Paradym reject such a request).
+            setCustomField(OpenId4VPSpec.VP_FORMATS_SUPPORTED, c.vpFormatsSupported.toJackson())
         }
     }
 }
