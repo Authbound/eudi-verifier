@@ -39,6 +39,7 @@ import eu.europa.ec.eudi.verifier.endpoint.adapter.input.web.*
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.authbound.AuthboundBackendCallbackPublisher
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.ProvideTrustSource
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.TrustSources
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.pemTrustStore
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cfg.GenerateRequestIdNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cfg.GenerateTransactionIdNimbus
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.BoundedHttpTransport
@@ -273,7 +274,11 @@ internal fun beans(clock: Clock) = BeanRegistrarDsl {
             AuthboundBackendCallbackPublisher(
                 delegate,
                 createBoundedHttpClient(
-                    OutboundPolicy.exactInternal(java.net.URI("$backendUrl/internal/eudi-verifier/presentations/wallet-response"), "POST", localOrigins),
+                    OutboundPolicy.exactInternal(
+                        java.net.URI("$backendUrl/internal/eudi-verifier/presentations/wallet-response"),
+                        "POST",
+                        localOrigins,
+                    ),
                     true,
                 ),
                 backendUrl,
@@ -1227,14 +1232,14 @@ private fun Environment.trustSources(): Map<Regex, TrustSourceConfig>? {
         }
         val lotlSourceConfig: TrustedListConfig? = null
 
-        // Parse keystore configuration if present
         val keystoreConfig = parseKeyStoreConfig("$indexPrefix.keystore")
+            ?: parsePemTrustAnchors("$indexPrefix.certificates")
 
         require(lotlSourceConfig != null || keystoreConfig != null) {
-            val lotlEnv = toEnvironmentVariable("$indexPrefix.lotl.location")
             val keystoreEnv = toEnvironmentVariable("$indexPrefix.keystore.path")
-            "Invalid trust source '$indexPrefix': set either '$indexPrefix.lotl.location' ($lotlEnv) " +
-                "or '$indexPrefix.keystore.path' ($keystoreEnv)."
+            val certificatesEnv = toEnvironmentVariable("$indexPrefix.certificates")
+            "Invalid trust source '$indexPrefix': set either '$indexPrefix.keystore.path' ($keystoreEnv) " +
+                "or '$indexPrefix.certificates' ($certificatesEnv)."
         }
 
         trustSourcesConfigMap[pattern] = TrustSourcesConfig(lotlSourceConfig, keystoreConfig)
@@ -1296,6 +1301,11 @@ private fun Environment.parseKeyStoreConfig(propertyPrefix: String): KeyStoreCon
         .map { KeyStoreConfig(keystorePath, keystoreType, keystorePassword, it) }
         .getOrNull()
 }
+
+private fun Environment.parsePemTrustAnchors(property: String): KeyStoreConfig? =
+    getPropertyOrEnvVariable(property)
+        ?.takeIf { it.isNotBlank() }
+        ?.let { pem -> KeyStoreConfig(property, "PKCS12", "", pemTrustStore(pem)) }
 
 private fun loadKeystore(keystorePath: String, keystoreType: String, keystorePassword: String) = Either.catch {
     eu.europa.ec.eudi.verifier.endpoint.adapter.out.http.localResource(keystorePath)

@@ -24,6 +24,7 @@ import eu.europa.ec.eudi.verifier.endpoint.domain.TrustedListConfig
 import eu.europa.ec.eudi.verifier.endpoint.domain.VerifierConfig
 import eu.europa.ec.eudi.verifier.endpoint.port.out.lotl.FetchLOTLCertificates
 import kotlinx.coroutines.*
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.InitializingBean
 import org.springframework.scheduling.annotation.EnableScheduling
 import org.springframework.scheduling.annotation.SchedulingConfigurer
@@ -37,6 +38,7 @@ class RefreshTrustSources(
     private var trustSources: TrustSources,
     private val verifierConfig: VerifierConfig,
 ) : InitializingBean, SchedulingConfigurer {
+    private val logger = LoggerFactory.getLogger(RefreshTrustSources::class.java)
     private val ioDispatcher = Dispatchers.IO.limitedParallelism(2)
 
     override fun afterPropertiesSet() {
@@ -64,7 +66,8 @@ class RefreshTrustSources(
     private suspend fun updateLOTLs() =
         withContext(ioDispatcher + CoroutineName("initializing LOTL(s)")) {
             when (verifierConfig.trustSourcesConfig) {
-                null -> trustSources.ignoreAll()
+                // A credential type without a trust source is refused, so no configuration refuses everything.
+                null -> logger.warn("No trust sources configured: every presented credential will be refused")
                 else ->
                     verifierConfig.trustSourcesConfig
                         .map { (regex, trustSourceConfig) ->

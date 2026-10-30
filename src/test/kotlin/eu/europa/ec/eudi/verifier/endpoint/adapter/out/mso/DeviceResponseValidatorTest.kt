@@ -20,6 +20,7 @@ import arrow.core.getOrElse
 import arrow.core.toNonEmptyListOrNull
 import eu.europa.ec.eudi.verifier.endpoint.TestContext
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.ProvideTrustSource
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.TrustSources
 import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.domain.Clock
 import eu.europa.ec.eudi.verifier.endpoint.domain.Nonce
@@ -159,6 +160,15 @@ class DeviceResponseValidatorTest {
             invalidDocument.errors.head
         }
         assertIs<DocumentError.X5CNotTrusted>(documentError)
+    }
+
+    @Test
+    fun `a verifier with no trust sources refuses every document`() = runTest {
+        val docV = DocumentValidator(provideTrustSource = TrustSources(), clock = clock, statusListTokenValidator = null)
+        val validated = DeviceResponseValidator(docV).ensureValid(Data.MdlVP)
+
+        val invalidDocuments = assertIs<DeviceResponseError.InvalidDocuments>(validated.leftOrNull()).invalidDocuments
+        assertIs<DocumentError.NoMatchingX5CShouldBe>(invalidDocuments.head.errors.head)
     }
 
     @Test

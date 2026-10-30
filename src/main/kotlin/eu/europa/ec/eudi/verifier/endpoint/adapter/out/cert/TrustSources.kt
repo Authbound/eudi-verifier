@@ -58,13 +58,6 @@ class TrustSources(
         }
     }
 
-    suspend fun ignoreAll() {
-        mutex.withLock {
-            x5CShouldBeMap[Regex(".*")] = X5CShouldBe.Ignored
-            logger.info("No trust sources configured. X5CShouldBe is set to Ignored")
-        }
-    }
-
     /**
      * Implementation of TrustSourceProvider
      * Retrieves the X5CShouldBe for the given document type.
