@@ -110,7 +110,10 @@ class CreateJarNimbusTest {
 
         assertTrue { claimSet.claims.containsKey("client_metadata") }
         val rawClientMetadata = claimSet.getJSONObjectClaim("client_metadata")
-        assertEquals(rawClientMetadata[OpenId4VPSpec.VP_FORMATS], rawClientMetadata[OpenId4VPSpec.VP_FORMATS_SUPPORTED])
+        // Only the OpenID4VP 1.0 name: sending the pre-1.0 vp_formats as well makes Credo-based
+        // wallets (Paradym) reject the request as mixing drafts <= 26 and >= 28.
+        assertTrue { rawClientMetadata.containsKey(OpenId4VPSpec.VP_FORMATS_SUPPORTED) }
+        assertFalse { rawClientMetadata.containsKey("vp_formats") }
         val clientMetadata = OIDCClientMetadata.parse(JSONObject(rawClientMetadata))
         assertNull(clientMetadata.jwkSetURI)
         assertEquals(JWKSet(ecKey).toPublicJWKSet(), clientMetadata.jwkSet)
