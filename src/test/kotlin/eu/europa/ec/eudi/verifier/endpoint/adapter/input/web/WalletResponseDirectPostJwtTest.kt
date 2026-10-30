@@ -25,6 +25,8 @@ import com.nimbusds.jose.util.Base64URL
 import com.nimbusds.jwt.EncryptedJWT
 import com.nimbusds.jwt.JWTClaimsSet
 import eu.europa.ec.eudi.verifier.endpoint.VerifierApplicationTest
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.TrustSources
+import eu.europa.ec.eudi.verifier.endpoint.adapter.out.cert.X5CShouldBe
 import eu.europa.ec.eudi.verifier.endpoint.domain.Clock
 import eu.europa.ec.eudi.verifier.endpoint.domain.RequestId
 import eu.europa.ec.eudi.verifier.endpoint.domain.TransactionId
@@ -435,6 +437,11 @@ internal class DeviceResponseValidationTest {
         @Primary
         fun generateEphemeralEncryptionKeyPair(): GenerateEphemeralEncryptionKeyPair =
             GenerateEphemeralEncryptionKeyPair { ephemeralEncryptionKey.right() }
+
+        // This test covers device authentication; the fixture's issuer certificate has since expired.
+        @Bean
+        @Primary
+        fun trustSources(): TrustSources = TrustSources(x5CShouldBeMap = mutableMapOf(Regex(".*") to X5CShouldBe.Ignored))
 
         companion object {
             val requestId: RequestId = RequestId("1234567890")
